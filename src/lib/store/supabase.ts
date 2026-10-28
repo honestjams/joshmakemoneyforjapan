@@ -147,6 +147,19 @@ export class SupabaseStore implements Store {
     return calibrationFromTrades((rows as { agents: string[]; pnl: number }[]).map((r) => ({ agents: r.agents, pnl: Number(r.pnl) })));
   }
 
+  /** Closed paper trades that passed the EV gate (exploration excluded), for the go-live check. */
+  async gatedPaperTrades(): Promise<{ pnl: number; size: number; entryPrice: number }[]> {
+    const rows = check(
+      await this.db.from("trades").select("pnl, size, entry_price").eq("mode", "paper").eq("exploration", false),
+      "gated paper trades",
+    );
+    return (rows as { pnl: number; size: number; entry_price: number }[]).map((r) => ({
+      pnl: Number(r.pnl),
+      size: Number(r.size),
+      entryPrice: Number(r.entry_price),
+    }));
+  }
+
   async logRun(run: RunLog): Promise<void> {
     check(
       await this.db.from("runs").insert({

@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
-import { productionDeps } from "@/lib/bot";
+import { productionDeps, tradingMode } from "@/lib/bot";
 import { runTick } from "@/lib/engine";
+import { goLiveCheck } from "@/lib/stats";
+import { SupabaseStore } from "@/lib/store/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +20,10 @@ function authorized(req: Request): boolean {
 export async function POST(req: Request) {
   if (!authorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
   try {
+    if (tradingMode() === "live") {
+      const gate = goLiveCheck(await new SupabaseStore("paper").gatedPaperTrades());
+      if (!gate.ready) return Response.json({ error: `live trading blocked: ${gate.reason}` }, { status: 409 });
+    }
     const result = await runTick(productionDeps());
     return Response.json(result, { status: result.errors.length ? 207 : 200 });
   } catch (err) {

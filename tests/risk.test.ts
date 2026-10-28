@@ -83,3 +83,14 @@ it("roundDownToIncrement never rounds up", () => {
   expect(roundDownToIncrement(0.0003, 0.0001)).toBe(0.0003);
   expect(roundDownToIncrement(0.00009, 0.0001)).toBe(0);
 });
+
+describe("goLiveCheck", () => {
+  const t = (pnl: number) => ({ pnl, size: 1, entryPrice: 100 });
+  it("blocks live trading until there are enough profitable EV-gated paper trades", async () => {
+    const { goLiveCheck } = await import("@/lib/stats");
+    expect(goLiveCheck([]).ready).toBe(false);
+    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1 : -1.2))).ready).toBe(false); // net negative
+    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1.05 : -1))).ready).toBe(false); // PF 1.05 < 1.1
+    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1.5 : -1))).ready).toBe(true);
+  });
+});

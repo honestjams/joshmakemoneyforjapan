@@ -15,7 +15,7 @@ Multi-agent crypto trading bot for CoinJar Exchange. Next.js on Vercel, Supabase
 - Never put more than 10% of equity in one trade, and never risk losing more than 10% of equity on one trade (`RISK` in `src/config/settings.ts`, enforced in `src/lib/agents/risk.ts`). Never round a size up to meet an exchange minimum; skip the trade instead.
 - No AI component (signal agents, research brief, JEV) may bypass the risk manager or place orders directly.
 - Paper exploration (`explore`) must never apply to a live broker.
-- Live trading needs both `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`.
+- Live trading needs both `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`, and `/api/tick` refuses live mode until the paper record passes `GO_LIVE` (settings.ts). The user's instruction: paper trade until returns are positive. Don't lower `GO_LIVE` without their explicit say-so.
 - Never ask the user to paste API keys into chat. Keys go in Vercel env vars.
 
 ## Knowledge update procedure
@@ -39,4 +39,4 @@ When the user asks for a "knowledge update" (or "update the bot's research"):
 
 4. Tell the user the bias you set, the risk events and the sources. Point out that research only nudges decisions; it never overrides the expected-value gate or the risk rules.
 
-Supabase project for the bot: not created yet (record the project ref here once it exists).
+Supabase project for the bot: `trading-bot`, ref `asfjmvptnmisgelxvcrz` (ap-southeast-2, Sydney). Never touch the user's other Supabase projects.

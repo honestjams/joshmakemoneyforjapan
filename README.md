@@ -82,7 +82,7 @@ npm run backtest       # walk-forward backtest (add --days 180, --cash 50,500)
 
 ## Going live (only after paper results justify it)
 
-1. Paper trade with `PAPER_EXPLORATION=false` for at least 4 weeks, with a positive win-rate-and-EV record on the dashboard.
+1. The code enforces this one: `/api/tick` refuses live mode until the paper account has **30+ EV-gated trades (exploration excluded) with positive net P/L and a profit factor ≥ 1.1** (`GO_LIVE` in `src/config/settings.ts`). The dashboard shows progress.
 2. In CoinJar Exchange → Settings → API Keys, create a key with **trading only, no withdrawals**.
 3. Add it in Vercel as `COINJAR_API_KEY`, and set `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`.
 4. Deposit at least the balance needed for the markets you want (table above).

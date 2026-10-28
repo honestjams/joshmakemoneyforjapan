@@ -60,6 +60,19 @@ export const RESEARCH = {
   riskEventWindowMs: 2 * 60 * 60 * 1000,
 };
 
+/**
+ * Your rule: paper trade until returns are positive. Live mode refuses to run
+ * until the paper account's EV-gated trades (exploration trades excluded)
+ * clear every bar below.
+ */
+export const GO_LIVE = {
+  minPaperTrades: 30,
+  /** Net P/L after fees must be above zero... */
+  minTotalPnl: 0,
+  /** ...and gross wins must exceed gross losses by at least this factor. */
+  minProfitFactor: 1.1,
+};
+
 export const JEV = {
   /** Weight given to JEV's probability vs the bot's own calibrated estimate, once JEV is connected. */
   blendWeight: 0.5,

@@ -1,6 +1,6 @@
 import { RISK, STRATEGY } from "@/config/settings";
 import { tradingMode } from "@/lib/bot";
-import { tradeStats } from "@/lib/stats";
+import { goLiveCheck, tradeStats } from "@/lib/stats";
 import { supabaseAdmin } from "@/lib/store/supabase";
 import type { BotState } from "@/lib/types";
 import { haltTrading, resumeTrading } from "./actions";
@@ -47,6 +47,7 @@ export default async function Dashboard() {
   const jevScored = trades.filter((t) => t.jev_probability !== null);
   const jevBrier = jevScored.length ? jevScored.reduce((s, t) => s + (Number(t.jev_probability) - (t.pnl > 0 ? 1 : 0)) ** 2, 0) / jevScored.length : null;
   const ownBrier = jevScored.length ? jevScored.reduce((s, t) => s + (Number(t.win_probability) - (t.pnl > 0 ? 1 : 0)) ** 2, 0) / jevScored.length : null;
+  const gate = goLiveCheck(trades.filter((t) => !t.exploration));
   const stale = latest ? Date.now() - Date.parse(latest.at) > 20 * 60 * 1000 : true;
 
   return (
@@ -69,6 +70,13 @@ export default async function Dashboard() {
         <Tile label="Win rate (EV-gated)" value={gated.trades ? pct(gated.winRate) : "–"} sub={`${gated.trades} trades, target 65%`} />
         <Tile label="Avg win / loss" value={all.trades ? `${money(all.avgWin)} / ${money(all.avgLoss)}` : "–"} />
       </div>
+
+      {mode === "paper" && (
+        <div className="banner">
+          <strong>Go-live check: {gate.ready ? "passed" : "not yet"}</strong>{" "}
+          <span className="muted">· {gate.reason}</span>
+        </div>
+      )}
 
       <div className="actions">
         {state?.halted ? (
