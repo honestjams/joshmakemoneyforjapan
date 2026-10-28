@@ -147,14 +147,32 @@ export class SupabaseStore implements Store {
     );
   }
 
-  /** Closed paper trades, for the go-live check. */
-  async paperTrades(): Promise<{ pnl: number; size: number; entryPrice: number }[]> {
-    const rows = check(await this.db.from("trades").select("pnl, size, entry_price").eq("mode", "paper"), "paper trades");
-    return (rows as { pnl: number; size: number; entry_price: number }[]).map((r) => ({
-      pnl: Number(r.pnl),
-      size: Number(r.size),
-      entryPrice: Number(r.entry_price),
-    }));
+  async tryLock(now: number, ttlMs: number): Promise<boolean> {
+    // The row is created once; after that a conditional update is the lock.
+    check(await this.db.from("bot_locks").upsert({ mode: this.mode }, { onConflict: "mode", ignoreDuplicates: true }), "create lock");
+    const rows = check(
+      await this.db
+        .from("bot_locks")
+        .update({ locked_until: new Date(now + ttlMs).toISOString() })
+        .eq("mode", this.mode)
+        .lt("locked_until", new Date(now).toISOString())
+        .select("mode"),
+      "take lock",
+    );
+    return (rows ?? []).length === 1;
+  }
+
+  async unlock(): Promise<void> {
+    check(await this.db.from("bot_locks").update({ locked_until: new Date(0).toISOString() }).eq("mode", this.mode), "release lock");
+  }
+
+  /** Paper runs over a recent window, for the go-live health check. */
+  async paperRunHealth(sinceMs: number): Promise<{ runs: number; errors: number }> {
+    const since = new Date(sinceMs).toISOString();
+    const all = await this.db.from("runs").select("id", { count: "exact", head: true }).eq("mode", "paper").gte("at", since);
+    const bad = await this.db.from("runs").select("id", { count: "exact", head: true }).eq("mode", "paper").gte("at", since).not("error", "is", null);
+    if (all.error || bad.error) throw new Error(`supabase run health: ${(all.error ?? bad.error)!.message}`);
+    return { runs: all.count ?? 0, errors: bad.count ?? 0 };
   }
 
   async logRun(run: RunLog): Promise<void> {

@@ -73,5 +73,6 @@ button {
   cursor: pointer;
 }
 button.danger { border-color: var(--bad); color: var(--bad); }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+.confirm-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 ul.log { margin: 0; padding-left: 18px; }

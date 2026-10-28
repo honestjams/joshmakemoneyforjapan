@@ -1,11 +1,11 @@
 import { MARKETS, RISK } from "@/config/settings";
 import { summarize } from "@/lib/agents/decision";
 import { STRATEGIES } from "@/lib/agents/strategies";
-import { baseCalibration, tradingMode } from "@/lib/bot";
-import { goLiveCheck, tradeStats } from "@/lib/stats";
+import { baseCalibration, readinessReport, tradingMode } from "@/lib/bot";
+import { tradeStats } from "@/lib/stats";
 import { supabaseAdmin } from "@/lib/store/supabase";
 import type { BotState } from "@/lib/types";
-import { haltTrading, resumeTrading } from "./actions";
+import { haltTrading, liquidateEverything, resumeTrading } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +47,7 @@ export default async function Dashboard() {
   const jevScored = trades.filter((t) => t.jev_probability !== null);
   const jevBrier = jevScored.length ? jevScored.reduce((s, t) => s + (Number(t.jev_probability) - (t.pnl > 0 ? 1 : 0)) ** 2, 0) / jevScored.length : null;
   const ownBrier = jevScored.length ? jevScored.reduce((s, t) => s + (Number(t.win_probability) - (t.pnl > 0 ? 1 : 0)) ** 2, 0) / jevScored.length : null;
-  const gate = goLiveCheck(trades);
+  const readiness = await readinessReport().catch((err: Error) => ({ ready: false, checks: [{ label: "Checklist", ok: false, detail: err.message }] }));
   const stale = latest ? Date.now() - Date.parse(latest.at) > 20 * 60 * 1000 : true;
 
   return (
@@ -71,12 +71,22 @@ export default async function Dashboard() {
         <Tile label="Profit factor" value={all.trades ? all.profitFactor.toFixed(2) : "–"} sub="gross wins ÷ gross losses" />
       </div>
 
-      {mode === "paper" && (
-        <div className="banner">
-          <strong>Go-live check: {gate.ready ? "passed" : "not yet"}</strong>{" "}
-          <span className="muted">· {gate.reason}</span>
-        </div>
-      )}
+      <div className="banner">
+        <strong>
+          {mode === "live"
+            ? state?.liveSince
+              ? `Live since ${new Date(state.liveSince).toLocaleString("en-AU", { timeZone: "Australia/Sydney", dateStyle: "medium", timeStyle: "short" })}`
+              : "Live mode set; waiting for the go-live checklist"
+            : `Go-live checklist: ${readiness.ready ? "all passed" : "not yet"}`}
+        </strong>
+        <ul className="log">
+          {readiness.checks.map((c) => (
+            <li key={c.label}>
+              <span className={c.ok ? "good" : "bad"}>{c.ok ? "✓" : "✗"}</span> {c.label}: <span className="muted">{c.detail}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
 
       <p className="muted">
         Trend following trades rarely (roughly once a month per market) and wins less than half the time; the winners are several times
@@ -95,6 +105,14 @@ export default async function Dashboard() {
         ) : (
           <form action={haltTrading}>
             <button type="submit" className="danger">Halt new trades</button>
+          </form>
+        )}
+        {positions.length > 0 && (
+          <form action={liquidateEverything} className="confirm-form">
+            <label>
+              <input type="checkbox" name="confirm" value="yes" required /> I want to sell everything now
+            </label>
+            <button type="submit" className="danger">Sell all positions &amp; halt</button>
           </form>
         )}
       </div>

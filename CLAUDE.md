@@ -14,9 +14,12 @@ Multi-agent crypto trading bot for CoinJar Exchange. Next.js on Vercel, Supabase
 ## Rules that must not be loosened
 
 - Never put more than 10% of equity in one trade, and never risk losing more than 10% of equity on one trade (`RISK` in `src/config/settings.ts`, enforced in `src/lib/agents/risk.ts`). Never round a size up to meet an exchange minimum; skip the trade instead.
+- Never lose more than 10% of total capital in a day (Sydney time): at that loss the engine sells everything and opens nothing until the next day (`RISK.maxDailyLossPct`).
+- The dashboard's "Sell all positions & halt" button (and `liquidateAll` in `src/lib/engine.ts`) must always work, in paper and live mode, without the go-live checks.
 - No AI component (strategy agents, research brief, JEV) may bypass the risk manager or place orders directly.
 - Any new strategy must beat costs on unseen data in `npm run backtest` before it goes into `STRATEGIES`. Intraday strategies on CoinJar lost money on fees and spread in every test (see README).
-- Live trading needs both `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`, and `/api/tick` refuses live mode until the paper record passes `GO_LIVE` (settings.ts). The user's instruction: paper trade until returns are positive. Don't lower `GO_LIVE` without their explicit say-so.
+- Live trading needs both `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`, and `/api/tick` refuses live mode until the go-live checklist passes (`GO_LIVE` in settings.ts, `liveGate` in `src/lib/bot.ts`). On 28 Oct 2026 the user chose to go live after one week of paper trading (from 4 Nov 2026) instead of 30 profitable paper trades. Don't loosen the checklist without their explicit say-so.
+- The live CoinJar key must be trade-only: `checkCoinjarKey` rejects keys with withdrawal or transfer permission on every live run.
 - Never ask the user to paste API keys into chat. Keys go in Vercel env vars.
 
 ## Knowledge update procedure

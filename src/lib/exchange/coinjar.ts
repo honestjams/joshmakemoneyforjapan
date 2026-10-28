@@ -100,6 +100,11 @@ export class CoinjarTradingClient {
     });
   }
 
+  /** What this API key is allowed to do. */
+  tokenScope(): Promise<{ scope: string | null; scopes: string[] }> {
+    return this.request("GET", "/tokens/scope");
+  }
+
   accounts(): Promise<{ asset_code: string; available: string; balance: string }[]> {
     return this.request("GET", "/accounts");
   }

@@ -23,6 +23,9 @@ export interface Store {
   /** Win/loss record per strategy from this mode's closed trades. */
   tradeCalibration(): Promise<Calibration>;
   logRun(run: RunLog): Promise<void>;
+  /** Claims this mode's run lock until now + ttlMs. False if another run holds it. */
+  tryLock(now: number, ttlMs: number): Promise<boolean>;
+  unlock(): Promise<void>;
 }
 
 export function newState(initialCash: number, now: number): BotState {
@@ -30,15 +33,16 @@ export function newState(initialCash: number, now: number): BotState {
     halted: false,
     haltReason: null,
     peakEquity: initialCash,
-    day: utcDay(now),
+    day: tradingDay(now),
     dayStartEquity: initialCash,
     paperCash: initialCash,
     lastExitAt: {},
   };
 }
 
-export function utcDay(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
+/** Calendar day in Sydney (YYYY-MM-DD): "a day" for the daily loss rules means your day, not UTC's. */
+export function tradingDay(ms: number): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Sydney" }).format(new Date(ms));
 }
 
 /** Per-strategy win/loss record from closed trades (returns relative to the position's cost). */
@@ -108,5 +112,14 @@ export class MemoryStore implements Store {
   }
   async logRun(run: RunLog): Promise<void> {
     this.runs.push(run);
+  }
+  lockedUntil = 0;
+  async tryLock(now: number, ttlMs: number): Promise<boolean> {
+    if (this.lockedUntil > now) return false;
+    this.lockedUntil = now + ttlMs;
+    return true;
+  }
+  async unlock(): Promise<void> {
+    this.lockedUntil = 0;
   }
 }

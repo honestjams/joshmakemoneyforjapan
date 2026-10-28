@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { accountBlock, assessEntry, roundDownToIncrement, stopFill } from "@/lib/agents/risk";
-import { goLiveCheck } from "@/lib/stats";
+import { checkCoinjarKey, liveReadiness } from "@/lib/live";
+import type { CoinjarTradingClient } from "@/lib/exchange/coinjar";
 import { candle, position, proposal, state } from "./helpers";
 
 const portfolio = (equity: number, cash = equity) => ({ equity, availableCash: cash, openPositions: [] });
@@ -85,12 +86,32 @@ it("roundDownToIncrement never rounds up", () => {
   expect(roundDownToIncrement(0.00009, 0.0001)).toBe(0);
 });
 
-describe("goLiveCheck", () => {
-  const t = (pnl: number) => ({ pnl, size: 1, entryPrice: 100 });
-  it("blocks live trading until there are enough profitable paper trades", () => {
-    expect(goLiveCheck([]).ready).toBe(false);
-    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1 : -1.2))).ready).toBe(false); // net negative
-    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1.05 : -1))).ready).toBe(false); // profit factor 1.05 < 1.1
-    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1.5 : -1))).ready).toBe(true);
+describe("go-live checklist", () => {
+  const goodKey = { ok: true, problems: [], scopes: ["read", "trade"], audAvailable: 200 };
+  const healthy = { runs: 860, errors: 2 };
+  const after = Date.parse("2026-11-04T09:00:00+11:00");
+
+  it("passes only when every check passes", () => {
+    expect(liveReadiness({ now: after, paperRuns: healthy, paperHalted: false, key: goodKey }).ready).toBe(true);
+    expect(liveReadiness({ now: Date.parse("2026-11-01T00:00:00Z"), paperRuns: healthy, paperHalted: false, key: goodKey }).ready).toBe(false);
+    expect(liveReadiness({ now: after, paperRuns: { runs: 300, errors: 0 }, paperHalted: false, key: goodKey }).ready).toBe(false);
+    expect(liveReadiness({ now: after, paperRuns: { runs: 860, errors: 100 }, paperHalted: false, key: goodKey }).ready).toBe(false);
+    expect(liveReadiness({ now: after, paperRuns: healthy, paperHalted: true, key: goodKey }).ready).toBe(false);
+    expect(liveReadiness({ now: after, paperRuns: healthy, paperHalted: false, key: null }).ready).toBe(false);
+  });
+
+  const client = (scope: string | null, scopes: string[]) =>
+    ({ tokenScope: async () => ({ scope, scopes }), accounts: async () => [{ asset_code: "AUD", available: "150.00", balance: "150.00" }] }) as unknown as CoinjarTradingClient;
+
+  it("accepts a trade-only CoinJar key", async () => {
+    const k = await checkCoinjarKey(client("trades", ["read", "trade"]));
+    expect(k.ok).toBe(true);
+    expect(k.audAvailable).toBe(150);
+  });
+  it("rejects keys that can withdraw, transfer, or do everything", async () => {
+    expect((await checkCoinjarKey(client("trades", ["read", "trade", "external_withdrawal"]))).ok).toBe(false);
+    expect((await checkCoinjarKey(client("trades", ["read", "trade", "transfer"]))).ok).toBe(false);
+    expect((await checkCoinjarKey(client("allaccess", ["read", "trade"]))).ok).toBe(false);
+    expect((await checkCoinjarKey(client("readonly", ["read"]))).ok).toBe(false);
   });
 });

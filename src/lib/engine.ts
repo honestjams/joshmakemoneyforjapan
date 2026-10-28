@@ -5,7 +5,7 @@ import { researchView } from "./agents/research";
 import { accountBlock, assessEntry, stopFill } from "./agents/risk";
 import { STRATEGIES, type Strategy, strategyByName } from "./agents/strategies";
 import type { Broker } from "./exchange/broker";
-import { mergeCalibration, type Store, utcDay } from "./store/store";
+import { mergeCalibration, type Store, tradingDay } from "./store/store";
 import type { BotState, Candle, ExitReason, KnowledgeBrief, Position, ProductRules, Ticker } from "./types";
 
 /** Market-data agent's sources. CoinJar in production; replayed history in backtests. */
@@ -65,6 +65,9 @@ class MarketView {
   }
 }
 
+/** A run never takes this long; the lock expires on its own if a run crashes mid-way. */
+const LOCK_TTL_MS = 2 * 60 * 1000;
+
 /**
  * One cycle of the bot, run every 5 minutes by the scheduler:
  * 1. market data -> 2. exits for open positions -> 3. account risk checks ->
@@ -74,6 +77,18 @@ export async function runTick(deps: EngineDeps): Promise<TickResult> {
   const now = deps.now ?? Date.now();
   const products = deps.products ?? MARKETS.products;
   const strategies = deps.strategies ?? STRATEGIES;
+  const { store } = deps;
+  if (!(await store.tryLock(now, LOCK_TTL_MS))) {
+    return { mode: "paper", equity: 0, cash: 0, openPositions: 0, actions: ["skipped: another run is in progress"], errors: [] };
+  }
+  try {
+    return await tick(deps, now, products, strategies);
+  } finally {
+    await store.unlock();
+  }
+}
+
+async function tick(deps: EngineDeps, now: number, products: readonly string[], strategies: readonly Strategy[]): Promise<TickResult> {
   const { store } = deps;
   const actions: string[] = [];
   const errors: string[] = [];
@@ -101,15 +116,35 @@ export async function runTick(deps: EngineDeps): Promise<TickResult> {
       errors.push(`${pos.productId} exit: ${(err as Error).message}`);
     }
   }
-  const positions = await store.openPositions();
+  let positions = await store.openPositions();
 
   // 3. Account-level risk.
   let cash = await broker.availableCash();
-  const equity = cash + positions.reduce((s, p) => s + p.size * view.markPrice(p), 0);
-  const today = utcDay(now);
+  let equity = cash + positions.reduce((s, p) => s + p.size * view.markPrice(p), 0);
+  if (state.peakEquity <= 0) {
+    // First live run: start the drawdown and daily-loss baselines from the real balance.
+    state.peakEquity = equity;
+    state.dayStartEquity = equity;
+  }
+  const today = tradingDay(now);
   if (state.day !== today) {
     state.day = today;
     state.dayStartEquity = equity;
+  }
+  const dayLoss = state.dayStartEquity > 0 ? (state.dayStartEquity - equity) / state.dayStartEquity : 0;
+  if (dayLoss >= RISK.maxDailyLossPct && positions.length > 0) {
+    // Your rule: never lose more than 10% of capital in a day. Sell everything; new trades resume tomorrow.
+    actions.push(`DAILY LOSS LIMIT: down ${(dayLoss * 100).toFixed(1)}% today, selling all positions`);
+    for (const pos of positions) {
+      try {
+        actions.push(await sellNow(deps, broker, state, pos, view.tickers.get(pos.productId)!.bid, "daily_loss_limit", "down 10% today", now));
+      } catch (err) {
+        errors.push(`${pos.productId} daily-loss sell: ${(err as Error).message}`);
+      }
+    }
+    positions = await store.openPositions();
+    cash = await broker.availableCash();
+    equity = cash + positions.reduce((s, p) => s + p.size * view.markPrice(p), 0);
   }
   const block = accountBlock(state, equity);
   if (block?.haltNow) {
@@ -292,6 +327,24 @@ async function manageExit(deps: EngineDeps, broker: Broker, state: BotState, vie
   }
   if (!reason) return null;
 
+  return sellNow(deps, broker, state, pos, bid, reason, detail, now);
+}
+
+/**
+ * Sells a whole position at market now. Live: cancels the exchange stop first
+ * (it reserves the coins) and accounts for any part the stop already sold.
+ */
+async function sellNow(
+  deps: EngineDeps,
+  broker: Broker,
+  state: BotState,
+  pos: Position,
+  bid: number,
+  reason: ExitReason,
+  detail: string,
+  now: number,
+): Promise<string> {
+  if (broker.mode === "paper") return closeAt(deps, state, pos, await broker.sell(pos.productId, pos.size, bid), reason, detail, now);
   let alreadySold = { size: 0, price: 0, fee: 0 };
   if (pos.stopOrderId) {
     await broker.cancelStop(pos.stopOrderId);
@@ -303,6 +356,49 @@ async function manageExit(deps: EngineDeps, broker: Broker, state: BotState, vie
   const totalSize = alreadySold.size + sold.size;
   const avgPrice = totalSize > 0 ? (alreadySold.size * alreadySold.price + sold.size * sold.price) / totalSize : bid;
   return closeAt(deps, state, pos, { size: totalSize, price: avgPrice, fee: alreadySold.fee + sold.fee }, reason, detail, now);
+}
+
+/**
+ * Emergency button: sell every open position at market and halt the bot
+ * until a person presses Resume. Waits briefly if a scheduled run is mid-way.
+ */
+export async function liquidateAll(deps: EngineDeps, why: string): Promise<{ actions: string[]; errors: string[] }> {
+  const { store } = deps;
+  const now = deps.now ?? Date.now();
+  return withRunLock(store, async () => {
+    const actions: string[] = [];
+    const errors: string[] = [];
+    const state = await store.loadState(deps.initialCash);
+    const broker = deps.createBroker(state);
+    for (const pos of await store.openPositions()) {
+      try {
+        const ticker = await deps.market.ticker(pos.productId);
+        actions.push(await sellNow(deps, broker, state, pos, ticker.bid, "liquidated", why, now));
+      } catch (err) {
+        errors.push(`${pos.productId}: ${(err as Error).message}`);
+      }
+    }
+    state.halted = true;
+    state.haltReason = `liquidated: ${why}`;
+    actions.push(`HALTED: ${state.haltReason}`);
+    await store.saveState(state);
+    const cash = await broker.availableCash();
+    await store.logRun({ at: now, mode: broker.mode, equity: cash, cash, actions, error: errors.length ? errors.join("; ") : null });
+    return { actions, errors };
+  });
+}
+
+/** Runs `fn` holding the run lock, waiting up to ~20s for a scheduled run to finish. For dashboard actions. */
+export async function withRunLock<T>(store: Store, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; !(await store.tryLock(Date.now(), LOCK_TTL_MS)); attempt++) {
+    if (attempt >= 20) throw new Error("a bot run is still in progress; try again in a minute");
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  try {
+    return await fn();
+  } finally {
+    await store.unlock();
+  }
 }
 
 async function closeAt(

@@ -2,7 +2,7 @@
 
 An automated trading bot for **CoinJar Exchange** (Australian, 0.10% fees). Several agents feed one decision, and hard-coded risk rules have the final say. It runs on **Vercel**, with **Supabase** for data and the 5-minute schedule.
 
-> **Status: paper trading.** Live trading is blocked in code until the paper account shows positive returns (see [Going live](#going-live)).
+> **Status: paper trading.** Real money is planned from 4 Nov 2026, once the go-live checklist passes (see [Going live](#going-live)).
 
 ## Strategy: daily trend following
 
@@ -34,7 +34,8 @@ Every 5 minutes, Supabase pg_cron calls `POST /api/tick`, which runs one cycle (
         │
         ├─► risk manager (plain code, final veto)
         │     ≤10% of equity per trade · ≤10% max loss per trade · one position per market (max 4)
-        │     5% daily loss limit · 20% drawdown kill switch · never rounds up to meet exchange minimums
+        │     −5% in a day: no new trades · −10% in a day: sell everything · −20% from peak: halt
+        │     never rounds up to meet exchange minimums
         │
         └─► execution agent ── paper broker, or CoinJar market orders + exchange-side stop-loss
 ```
@@ -92,12 +93,30 @@ npm run backtest       # walk-forward backtest through the real engine
 npx tsx scripts/research/trend.ts 1d 1 1 3   # rule comparison: interval, fill lag, cost multiplier, stop ATR
 ```
 
+## Safety controls
+
+- **Per trade:** ≤10% of equity in, and a worst-case loss of ≤10% of equity (in practice ~1–2%, because of the emergency stop).
+- **Per day (Sydney time):** down 5% stops new trades for the day; down **10% sells everything** and waits for tomorrow.
+- **Overall:** a 20% drop from the peak halts the bot until you press Resume.
+- **Sell everything:** the dashboard's "Sell all positions & halt" button sells every position at market and halts.
+- **One run at a time:** a lock stops two runs (or a run and a button press) trading at once.
+
 ## Going live
 
-1. **Enforced in code:** `/api/tick` refuses live mode until the paper account has **30+ closed trades with positive net P/L and a profit factor ≥ 1.1** (`GO_LIVE` in `src/config/settings.ts`). At about one trade a month per market, reaching 30 trades takes roughly 2 years.
-2. In CoinJar Exchange → Settings → API Keys, create a key with **trading only, no withdrawals**.
-3. Add it in Vercel as `COINJAR_API_KEY`, and set `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`.
-4. The live order path follows CoinJar's documented API but hasn't yet been run against a real account. Watch the first trades closely.
+The target is **4 November 2026**. `/api/tick` refuses live mode until this checklist passes; the dashboard shows it:
+
+1. The date is 4 Nov 2026 or later.
+2. Over the last 3 days the paper bot made ≥90% of its expected 5-minute runs, and ≤2% of them had errors.
+3. The paper account isn't halted.
+4. The CoinJar key is **trade-only**: no withdrawal or transfer permission, checked on every live run.
+
+To switch over:
+
+1. In CoinJar Exchange → Settings → API Keys, create a key with **trading permission only**.
+2. In Vercel, set `COINJAR_API_KEY`, `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`, then redeploy.
+3. Deposit at least the balance needed for the markets you want (table above).
+
+The live order path follows CoinJar's documented API but hasn't yet been run against a real account. Watch the first trades closely.
 
 ## JEV
 

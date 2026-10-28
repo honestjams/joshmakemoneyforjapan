@@ -55,7 +55,7 @@ export interface Position {
   jevProbability: number | null;
 }
 
-export type ExitReason = "signal_exit" | "stop_loss" | "strategy_retired";
+export type ExitReason = "signal_exit" | "stop_loss" | "strategy_retired" | "daily_loss_limit" | "liquidated";
 
 export interface ClosedTrade {
   positionId: string;
@@ -79,13 +79,15 @@ export interface BotState {
   halted: boolean;
   haltReason: string | null;
   peakEquity: number;
-  /** UTC date (YYYY-MM-DD) that dayStartEquity refers to. */
+  /** Sydney date (YYYY-MM-DD) that dayStartEquity refers to. */
   day: string;
   dayStartEquity: number;
   /** Paper-mode AUD cash balance. Ignored in live mode. */
   paperCash: number;
   /** productId -> epoch ms of last close, used for re-entry cooldown. */
   lastExitAt: Record<string, number>;
+  /** Live only: when the go-live checks first passed. Later live runs don't re-check paper health. */
+  liveSince?: number;
 }
 
 /** Research written into the bot by a Claude chat "knowledge update". */

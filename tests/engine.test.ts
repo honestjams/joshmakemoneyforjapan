@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { tradingMode } from "@/lib/bot";
-import { runTick, type EngineDeps } from "@/lib/engine";
+import { liquidateAll, runTick, type EngineDeps } from "@/lib/engine";
 import { HistoricalMarket } from "@/lib/backtest";
 import { PaperBroker, type Broker } from "@/lib/exchange/broker";
 import { MemoryStore, newState } from "@/lib/store/store";
@@ -126,6 +126,82 @@ describe("runTick (paper)", () => {
     expect(live.cancelStop).toHaveBeenCalledWith("stop-1");
     expect(sell).toHaveBeenCalledOnce();
     expect(store.trades[0].exitReason).toBe("signal_exit");
+  });
+});
+
+describe("safety controls", () => {
+  it("sells everything when the account is down 10% in a day, then opens nothing new", async () => {
+    // One 10%-sized position can't lose 10% of equity by itself, so simulate other losses earlier in the day.
+    const m = market([110, 112], 0.05);
+    const { store, tick } = await setup(m);
+    await tick(90);
+    expect(store.positions).toHaveLength(1);
+    store.state!.paperCash -= 60; // simulate other losses today: equity now ~$440 vs a $500 day start
+    store.state!.day = new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Sydney" }).format(new Date(afterClose(91)));
+    store.state!.dayStartEquity = 500;
+    const res = await tick(91);
+    expect(res.actions[0]).toMatch(/DAILY LOSS LIMIT/);
+    expect(store.positions).toHaveLength(0);
+    expect(store.trades[0].exitReason).toBe("daily_loss_limit");
+  });
+
+  it("liquidates every position and halts on request", async () => {
+    const m = market([110], 0.05);
+    const { store, tick } = await setup(m);
+    await tick(90);
+    expect(store.positions).toHaveLength(1);
+    const res = await liquidateAll(
+      {
+        store,
+        createBroker: (s) => new PaperBroker(s),
+        market: m,
+        decisionModel: { name: "none", winProbability: async () => null },
+        baseCalibration: goodCalibration,
+        initialCash: 500,
+      },
+      "test",
+    );
+    expect(res.errors).toHaveLength(0);
+    expect(store.positions).toHaveLength(0);
+    expect(store.trades[0].exitReason).toBe("liquidated");
+    expect(store.state!.halted).toBe(true);
+    expect((await tick(91)).actions.some((a) => a.startsWith("BUY"))).toBe(false);
+  });
+
+  it("skips a run while another holds the lock", async () => {
+    const { store, tick } = await setup(market([110]));
+    await store.tryLock(afterClose(90) - 1000, 60_000);
+    const res = await tick(90);
+    expect(res.actions[0]).toMatch(/another run is in progress/);
+    expect(store.positions).toHaveLength(0);
+  });
+
+  it("starts live drawdown baselines from the real balance on the first run", async () => {
+    const m = market([100]);
+    const store = new MemoryStore();
+    m.now = afterClose(90);
+    const live: Broker = {
+      mode: "live",
+      availableCash: async () => 180,
+      buy: vi.fn(),
+      sell: vi.fn(),
+      placeStop: vi.fn(),
+      stopStatus: vi.fn(),
+      cancelStop: vi.fn(),
+    };
+    await runTick({
+      store,
+      createBroker: () => live,
+      market: m,
+      decisionModel: { name: "none", winProbability: async () => null },
+      baseCalibration: goodCalibration,
+      initialCash: 0,
+      products: ["BTCAUD"],
+      now: m.now,
+    });
+    expect(store.state!.halted).toBe(false);
+    expect(store.state!.peakEquity).toBe(180);
+    expect(store.state!.dayStartEquity).toBe(180);
   });
 });
 

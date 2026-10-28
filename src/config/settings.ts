@@ -9,8 +9,10 @@ export const RISK = {
   maxPositionPctOfEquity: 0.1,
   /** Your rule: never lose more than 10% of remaining capital on one trade (stop-loss distance makes the real figure much smaller). */
   maxLossPctOfEquityPerTrade: 0.1,
-  /** Stop opening trades for the rest of the UTC day once down this much from the day's start. */
+  /** Stop opening new trades for the rest of the day (Sydney time) once down this much from the day's start. */
   dailyLossLimitPct: 0.05,
+  /** Your rule: never lose more than 10% of total capital in a day. At this loss the bot sells everything and waits for tomorrow. */
+  maxDailyLossPct: 0.1,
   /** Kill switch: halt all trading if equity falls this far below its peak. Needs a manual reset. */
   maxDrawdownPct: 0.2,
   /** One per market. With 10% each, at most 40% of equity is ever in the market. */
@@ -65,15 +67,22 @@ export const RESEARCH = {
 };
 
 /**
- * Your rule: paper trade until returns are positive. Live mode refuses to run
- * until the paper account's closed trades clear every bar below.
+ * Conditions for switching on real money (TRADING_MODE=live).
+ *
+ * Your decision on 28 Oct 2026: go live after one week of paper trading
+ * (from 4 Nov 2026) rather than waiting for 30 profitable paper trades, which
+ * would take about two years at this strategy's pace. A week can't prove
+ * profitability (that evidence is the backtest); it proves the bot runs
+ * reliably. These checks run before the first live trade.
  */
 export const GO_LIVE = {
-  minPaperTrades: 30,
-  /** Net P/L after fees must be above zero... */
-  minTotalPnl: 0,
-  /** ...and gross wins must exceed gross losses by at least this factor. */
-  minProfitFactor: 1.1,
+  earliestLiveAt: "2026-11-04T00:00:00+11:00",
+  /** The paper bot must have run cleanly over this period just before going live. */
+  healthWindowMs: 3 * 24 * 60 * 60 * 1000,
+  /** Share of the expected 5-minute runs that must have happened in that window. */
+  minRunCoverage: 0.9,
+  /** Share of runs allowed to report an error in that window. */
+  maxErrorRate: 0.02,
 };
 
 export const JEV = {
