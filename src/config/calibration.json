@@ -1,18 +1,12 @@
 {
-  "generatedAt": "2026-10-28T06:38:18.456Z",
-  "source": "studyAgents over 365 days of CoinJar 1h candles (BTCAUD, ETHAUD, SOLAUD, XRPAUD), stop 2 ATR / target 2 ATR",
-  "agents": {
-    "mean_reversion": {
-      "wins": 32,
-      "losses": 35
-    },
-    "trend_momentum": {
-      "wins": 307,
-      "losses": 421
-    },
-    "volume_breakout": {
-      "wins": 97,
-      "losses": 133
+  "generatedAt": "2026-10-28T07:23:06.820Z",
+  "source": "studyStrategy over CoinJar history since 2019-11-04 (BTCAUD, ETHAUD, SOLAUD, XRPAUD), net of 0.1% fees, 0.1% half-spread and 0.5% stop slippage",
+  "strategies": {
+    "donchian_55_20_1d": {
+      "wins": 40,
+      "losses": 45,
+      "winSum": 18.86493234020457,
+      "lossSum": 4.902501693932915
     }
   }
 }

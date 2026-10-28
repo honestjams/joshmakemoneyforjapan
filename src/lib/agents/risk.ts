@@ -1,5 +1,5 @@
-import { FEES, RISK, STRATEGY } from "@/config/settings";
-import type { BotState, Candle, ExitReason, Position, TradeProposal } from "../types";
+import { FEES, MARKETS, RISK } from "@/config/settings";
+import type { BotState, Candle, Position, TradeProposal } from "../types";
 
 export interface PortfolioSnapshot {
   /** Cash + open positions marked at the bid. */
@@ -62,14 +62,14 @@ export function assessEntry(args: {
     return { approved: false, reason: `already holding ${proposal.productId}` };
   }
   const lastExit = state.lastExitAt[proposal.productId];
-  if (lastExit !== undefined && now - lastExit < STRATEGY.reentryCooldownMs) {
+  if (lastExit !== undefined && now - lastExit < MARKETS.reentryCooldownMs) {
     return { approved: false, reason: `${proposal.productId} cooling down after last exit` };
   }
   if (spreadPct > RISK.maxSpreadPct) {
     return { approved: false, reason: `spread ${(spreadPct * 100).toFixed(2)}% too wide` };
   }
-  if (!(proposal.stopPrice < proposal.entryPrice && proposal.takeProfitPrice > proposal.entryPrice)) {
-    return { approved: false, reason: "invalid bracket prices" };
+  if (!(proposal.stopPrice > 0 && proposal.stopPrice < proposal.entryPrice)) {
+    return { approved: false, reason: "invalid stop price" };
   }
 
   // Rule 1: position size (including the entry fee) <= 10% of equity, and only cash we have.
@@ -91,19 +91,10 @@ export function assessEntry(args: {
 }
 
 /**
- * Exit check for one closed candle. Assumes the stop is hit first when a
- * candle touches both levels (the conservative choice).
+ * Emergency stop check for one candle: the fill price if its low reached the
+ * stop (at the open if it gapped through, less slippage), else null.
  */
-export function checkExit(position: Position, candle: Candle, candleMs: number): { price: number; reason: ExitReason } | null {
-  if (candle.low <= position.stopPrice) {
-    const fill = Math.min(candle.open, position.stopPrice) * (1 - FEES.stopSlippagePct);
-    return { price: fill, reason: "stop_loss" };
-  }
-  if (candle.high >= position.takeProfitPrice) {
-    return { price: Math.max(candle.open, position.takeProfitPrice), reason: "take_profit" };
-  }
-  if (candle.time + candleMs - position.openedAt >= STRATEGY.maxHoldMs) {
-    return { price: candle.close, reason: "time_stop" };
-  }
-  return null;
+export function stopFill(position: Position, candle: Candle): number | null {
+  if (candle.low > position.stopPrice) return null;
+  return Math.min(candle.open, position.stopPrice) * (1 - FEES.stopSlippagePct);
 }

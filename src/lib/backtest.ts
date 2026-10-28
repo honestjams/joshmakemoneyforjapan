@@ -1,39 +1,45 @@
-import { FEES, STRATEGY } from "@/config/settings";
+import { FEES } from "@/config/settings";
 import type { Calibration } from "./agents/decision";
-import { bracket } from "./agents/decision";
 import type { DecisionModel } from "./agents/jev";
-import { checkExit } from "./agents/risk";
-import { computeFeatures, SIGNAL_AGENTS } from "./agents/signals";
+import { stopFill } from "./agents/risk";
+import type { Strategy } from "./agents/strategies";
 import { type MarketData, runTick } from "./engine";
 import { PaperBroker } from "./exchange/broker";
+import { intervalMs } from "./exchange/coinjar";
 import { MemoryStore, newState } from "./store/store";
 import type { Candle, ClosedTrade, Position, ProductRules } from "./types";
 
-/** Half the bid/ask spread, applied to historical closes. CoinJar AUD spreads measured 0.15-0.28% (Oct 2026). */
-export const BACKTEST_HALF_SPREAD = 0.001;
+const seriesKey = (pid: string, interval: string) => `${pid}:${interval}`;
 
 /** Replays stored candles as if they were live, up to `now`. */
 export class HistoricalMarket implements MarketData {
   now = 0;
 
+  /**
+   * @param series candles keyed by "PRODUCT:interval"
+   * @param tickerInterval the finest interval loaded; its last close (± half-spread) is the simulated bid/ask
+   */
   constructor(
     private readonly series: Map<string, Candle[]>,
     private readonly productRules: Map<string, ProductRules>,
+    private readonly tickerInterval: string,
   ) {}
 
-  async candles(pid: string, _interval: string, from: number, to: number): Promise<Candle[]> {
-    const all = this.series.get(pid) ?? [];
-    const end = upperBound(all, to - STRATEGY.candleMs); // closed by `to`
+  static key = seriesKey;
+
+  async candles(pid: string, interval: string, from: number, to: number): Promise<Candle[]> {
+    const all = this.series.get(seriesKey(pid, interval)) ?? [];
+    const end = upperBound(all, to - intervalMs(interval)); // closed by `to`
     const start = upperBound(all, from - 1);
     return all.slice(start, end);
   }
 
   async ticker(pid: string) {
-    const all = this.series.get(pid) ?? [];
-    const idx = upperBound(all, this.now - STRATEGY.candleMs) - 1;
+    const all = this.series.get(seriesKey(pid, this.tickerInterval)) ?? [];
+    const idx = upperBound(all, this.now - intervalMs(this.tickerInterval)) - 1;
     if (idx < 0) throw new Error(`no history for ${pid} at ${new Date(this.now).toISOString()}`);
     const close = all[idx].close;
-    return { bid: close * (1 - BACKTEST_HALF_SPREAD), ask: close * (1 + BACKTEST_HALF_SPREAD), last: close, status: "continuous" };
+    return { bid: close * (1 - FEES.backtestHalfSpread), ask: close * (1 + FEES.backtestHalfSpread), last: close, status: "continuous" };
   }
 
   async rules() {
@@ -53,70 +59,72 @@ function upperBound(candles: Candle[], t: number): number {
   return lo;
 }
 
-export interface AgentStudy {
-  wins: number;
-  losses: number;
-  /** Mean net return per trade (after fees, spread and stop slippage). */
-  avgReturn: number;
+export interface StudyTrade {
+  strategy: string;
+  productId: string;
+  entryTime: number;
+  exitTime: number;
+  /** Net return after fees, spread and stop slippage. */
+  ret: number;
 }
 
 /**
- * Measures each signal agent on its own: every time it fires, simulate the
- * bracket trade forward with fees. Trades by the same agent on the same
- * product never overlap, so one long move isn't counted many times.
+ * One strategy on one market on its own (no portfolio limits), with the same
+ * entry, exit and stop rules as the engine. Used to measure a strategy's
+ * record for calibration.
  */
-export function studyAgents(series: Map<string, Candle[]>, fromMs: number, toMs: number): Record<string, AgentStudy> {
-  const out: Record<string, AgentStudy & { sum: number }> = {};
-  for (const [pid, candles] of series) {
-    const busyUntil: Record<string, number> = {};
-    for (let i = STRATEGY.lookbackCandles - 1; i < candles.length; i++) {
-      const entryTime = candles[i].time + STRATEGY.candleMs;
-      if (entryTime < fromMs || entryTime > toMs) continue;
-      const window = candles.slice(i - STRATEGY.lookbackCandles + 1, i + 1);
-      const f = computeFeatures(window);
-      const k = window.length - 1;
-      for (const agent of SIGNAL_AGENTS) {
-        if ((busyUntil[agent.name] ?? -1) >= i) continue;
-        if (agent.evaluate(f, k).direction !== "long") continue;
-        const entry = candles[i].close * (1 + BACKTEST_HALF_SPREAD);
-        const { stop, takeProfit } = bracket(entry, f.atr14[k]);
-        const pos: Position = {
-          id: "study",
-          productId: pid,
-          size: 1,
-          entryPrice: entry,
-          stopPrice: stop,
-          takeProfitPrice: takeProfit,
-          entryFee: entry * FEES.takerRate,
-          openedAt: entryTime,
-          stopOrderId: null,
-          winProbability: 0,
-          expectedValuePct: 0,
-          agents: [agent.name],
-          jevProbability: null,
-          exploration: false,
-        };
-        let j = i + 1;
-        let exit: ReturnType<typeof checkExit> = null;
-        for (; j < candles.length && !exit; j++) exit = checkExit(pos, candles[j], STRATEGY.candleMs);
-        if (!exit) break; // ran out of data; the open trade is not counted
-        const exitPrice = exit.reason === "take_profit" || exit.reason === "stop_loss" ? exit.price : exit.price * (1 - BACKTEST_HALF_SPREAD);
-        const ret = (exitPrice * (1 - FEES.takerRate) - entry * (1 + FEES.takerRate)) / entry;
-        const rec = (out[agent.name] ??= { wins: 0, losses: 0, avgReturn: 0, sum: 0 });
-        if (ret > 0) rec.wins++;
-        else rec.losses++;
-        rec.sum += ret;
-        busyUntil[agent.name] = j - 1;
+export function studyStrategy(strategy: Strategy, productId: string, candles: Candle[], fromMs = -Infinity, toMs = Infinity): StudyTrade[] {
+  const trades: StudyTrade[] = [];
+  const buyCost = (1 + FEES.backtestHalfSpread) * (1 + FEES.takerRate);
+  const sellKeep = (1 - FEES.backtestHalfSpread) * (1 - FEES.takerRate);
+  let pos: Position | null = null;
+  for (let i = strategy.lookbackCandles - 1; i < candles.length; i++) {
+    const closeTime = candles[i].time + strategy.candleMs;
+    const window = candles.slice(i - strategy.lookbackCandles + 1, i + 1);
+    if (pos) {
+      const stop = stopFill(pos, candles[i]);
+      const signal = stop === null ? strategy.exit(window) : null;
+      if (stop !== null || signal) {
+        const exitPrice = stop !== null ? stop * (1 - FEES.takerRate) : candles[i].close * sellKeep;
+        trades.push({ strategy: strategy.name, productId, entryTime: pos.openedAt, exitTime: closeTime, ret: exitPrice / pos.entryPrice - 1 });
+        pos = null;
       }
+      continue;
     }
+    if (closeTime < fromMs || closeTime > toMs) continue;
+    if (!strategy.entry(window)) continue;
+    const entry = candles[i].close * buyCost;
+    pos = {
+      id: "study",
+      productId,
+      size: 1,
+      entryPrice: entry,
+      stopPrice: strategy.stopPrice(window, candles[i].close),
+      entryFee: 0,
+      openedAt: closeTime,
+      stopOrderId: null,
+      strategy: strategy.name,
+      winProbability: 0,
+      expectedValuePct: 0,
+      jevProbability: null,
+    };
   }
-  return Object.fromEntries(
-    Object.entries(out).map(([k, v]) => [k, { wins: v.wins, losses: v.losses, avgReturn: v.sum / Math.max(1, v.wins + v.losses) }]),
-  );
+  return trades; // a position still open at the end isn't counted
 }
 
-export function toCalibration(study: Record<string, AgentStudy>): Calibration {
-  return Object.fromEntries(Object.entries(study).map(([k, v]) => [k, { wins: v.wins, losses: v.losses }]));
+export function toCalibration(trades: StudyTrade[]): Calibration {
+  const cal: Calibration = {};
+  for (const t of trades) {
+    const rec = (cal[t.strategy] ??= { wins: 0, losses: 0, winSum: 0, lossSum: 0 });
+    if (t.ret > 0) {
+      rec.wins++;
+      rec.winSum += t.ret;
+    } else {
+      rec.losses++;
+      rec.lossSum -= t.ret;
+    }
+  }
+  return cal;
 }
 
 export interface SimulationResult {
@@ -125,27 +133,33 @@ export interface SimulationResult {
   trades: ClosedTrade[];
   maxDrawdownPct: number;
   halted: boolean;
+  /** Equity after each step, for rolling-window analysis. */
+  curve: { t: number; equity: number }[];
 }
 
 const noJev: DecisionModel = { name: "none", winProbability: async () => null };
 
-/** Runs the real engine, candle by candle, over [fromMs, toMs) with a paper account. */
+/** Runs the real engine, step by step, over [fromMs, toMs) with a paper account. */
 export async function simulate(args: {
   series: Map<string, Candle[]>;
+  tickerInterval: string;
   rules: Map<string, ProductRules>;
   calibration: Calibration;
+  strategies: readonly Strategy[];
+  products: readonly string[];
   startCash: number;
   fromMs: number;
   toMs: number;
-  explore?: boolean;
 }): Promise<SimulationResult> {
-  const market = new HistoricalMarket(args.series, args.rules);
+  const market = new HistoricalMarket(args.series, args.rules, args.tickerInterval);
   const store = new MemoryStore();
   await store.saveState(newState(args.startCash, args.fromMs));
+  const step = intervalMs(args.tickerInterval);
   let peak = args.startCash;
   let maxDd = 0;
   let equity = args.startCash;
-  for (let t = args.fromMs; t < args.toMs; t += STRATEGY.candleMs) {
+  const curve: { t: number; equity: number }[] = [];
+  for (let t = Math.ceil(args.fromMs / step) * step + 5 * 60_000; t < args.toMs; t += step) {
     market.now = t;
     const res = await runTick({
       store,
@@ -155,13 +169,16 @@ export async function simulate(args: {
       baseCalibration: args.calibration,
       initialCash: args.startCash,
       now: t,
-      products: [...args.series.keys()],
-      explore: args.explore,
+      products: args.products,
+      strategies: args.strategies,
     });
-    if (res.errors.length) throw new Error(res.errors.join("; "));
+    // Markets that hadn't listed yet (SOLAUD before Oct 2022) simply have no data.
+    const real = res.errors.filter((e) => !e.includes("no history"));
+    if (real.length) throw new Error(real.join("; "));
     equity = res.equity;
+    curve.push({ t, equity });
     peak = Math.max(peak, equity);
     maxDd = Math.max(maxDd, (peak - equity) / peak);
   }
-  return { startCash: args.startCash, endEquity: equity, trades: store.trades, maxDrawdownPct: maxDd, halted: store.state?.halted ?? false };
+  return { startCash: args.startCash, endEquity: equity, trades: store.trades, maxDrawdownPct: maxDd, halted: store.state?.halted ?? false, curve };
 }

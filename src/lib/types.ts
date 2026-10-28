@@ -23,28 +23,17 @@ export interface ProductRules {
   sizeIncrementAt(price: number): number;
 }
 
-export type Direction = "long" | "flat";
-
-/** Output of a single signal agent. */
-export interface Signal {
-  agent: string;
-  direction: Direction;
-  /** 0..1, how strongly the agent's setup is present. */
-  confidence: number;
-  reason: string;
-}
-
 export interface TradeProposal {
   productId: string;
+  strategy: string;
   entryPrice: number;
+  /** Emergency stop-loss price. */
   stopPrice: number;
-  takeProfitPrice: number;
-  /** Calibrated probability the trade hits take-profit before stop-loss. */
+  /** Calibrated probability the trade closes in profit. */
   winProbability: number;
   /** Expected return per $1 of position after fees and spread. */
   expectedValuePct: number;
-  agents: string[];
-  reasons: string[];
+  reason: string;
 }
 
 export interface Position {
@@ -52,22 +41,21 @@ export interface Position {
   productId: string;
   size: number;
   entryPrice: number;
+  /** Emergency stop-loss; normal exits come from the strategy's exit rule. */
   stopPrice: number;
-  takeProfitPrice: number;
   entryFee: number;
   openedAt: number;
   /** Exchange stop-loss order id (live mode only). */
   stopOrderId: string | null;
+  /** Name of the strategy that opened (and will close) this position. */
+  strategy: string;
   winProbability: number;
   expectedValuePct: number;
-  agents: string[];
   /** JEV's own estimate, kept so its accuracy can be scored against outcomes. */
   jevProbability: number | null;
-  /** True for paper "exploration" trades taken without passing the EV gate. */
-  exploration: boolean;
 }
 
-export type ExitReason = "take_profit" | "stop_loss" | "time_stop" | "manual" | "kill_switch";
+export type ExitReason = "signal_exit" | "stop_loss" | "strategy_retired";
 
 export interface ClosedTrade {
   positionId: string;
@@ -81,11 +69,10 @@ export interface ClosedTrade {
   /** Net profit/loss in AUD after fees. */
   pnl: number;
   exitReason: ExitReason;
+  strategy: string;
   winProbability: number;
   expectedValuePct: number;
-  agents: string[];
   jevProbability: number | null;
-  exploration: boolean;
 }
 
 export interface BotState {

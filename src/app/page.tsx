@@ -1,5 +1,7 @@
-import { RISK, STRATEGY } from "@/config/settings";
-import { tradingMode } from "@/lib/bot";
+import { MARKETS, RISK } from "@/config/settings";
+import { summarize } from "@/lib/agents/decision";
+import { STRATEGIES } from "@/lib/agents/strategies";
+import { baseCalibration, tradingMode } from "@/lib/bot";
 import { goLiveCheck, tradeStats } from "@/lib/stats";
 import { supabaseAdmin } from "@/lib/store/supabase";
 import type { BotState } from "@/lib/types";
@@ -19,10 +21,9 @@ interface TradeRow {
   closed_at: string;
   pnl: number;
   exit_reason: string;
-  agents: string[];
+  strategy: string;
   win_probability: number;
   jev_probability: number | null;
-  exploration: boolean;
 }
 
 export default async function Dashboard() {
@@ -43,11 +44,10 @@ export default async function Dashboard() {
   const latest = runs[0];
 
   const all = tradeStats(trades);
-  const gated = tradeStats(trades.filter((t) => !t.exploration));
   const jevScored = trades.filter((t) => t.jev_probability !== null);
   const jevBrier = jevScored.length ? jevScored.reduce((s, t) => s + (Number(t.jev_probability) - (t.pnl > 0 ? 1 : 0)) ** 2, 0) / jevScored.length : null;
   const ownBrier = jevScored.length ? jevScored.reduce((s, t) => s + (Number(t.win_probability) - (t.pnl > 0 ? 1 : 0)) ** 2, 0) / jevScored.length : null;
-  const gate = goLiveCheck(trades.filter((t) => !t.exploration));
+  const gate = goLiveCheck(trades);
   const stale = latest ? Date.now() - Date.parse(latest.at) > 20 * 60 * 1000 : true;
 
   return (
@@ -55,7 +55,7 @@ export default async function Dashboard() {
       <h1>Trading bot</h1>
       <div className="muted">
         {mode === "live" ? <strong className="bad">LIVE trading</strong> : "Paper trading (simulated money)"} · CoinJar Exchange ·{" "}
-        {STRATEGY.candleInterval} candles · {STRATEGY.products.join(", ")}
+        {STRATEGIES.map((s) => s.name).join(", ")} · {MARKETS.products.join(", ")}
       </div>
 
       {state?.halted && <div className="banner bad">Halted: {state.haltReason}. No new trades until resumed.</div>}
@@ -66,9 +66,9 @@ export default async function Dashboard() {
         <Tile label="Equity" value={latest ? money(Number(latest.equity)) : "–"} />
         <Tile label="Cash" value={latest ? money(Number(latest.cash)) : "–"} />
         <Tile label="Total P/L" value={money(all.totalPnl)} tone={all.totalPnl >= 0 ? "good" : "bad"} />
-        <Tile label="Win rate (all)" value={all.trades ? pct(all.winRate) : "–"} sub={`${all.trades} trades`} />
-        <Tile label="Win rate (EV-gated)" value={gated.trades ? pct(gated.winRate) : "–"} sub={`${gated.trades} trades, target 65%`} />
+        <Tile label="Win rate" value={all.trades ? pct(all.winRate) : "–"} sub={`${all.trades} closed trades`} />
         <Tile label="Avg win / loss" value={all.trades ? `${money(all.avgWin)} / ${money(all.avgLoss)}` : "–"} />
+        <Tile label="Profit factor" value={all.trades ? all.profitFactor.toFixed(2) : "–"} sub="gross wins ÷ gross losses" />
       </div>
 
       {mode === "paper" && (
@@ -77,6 +77,15 @@ export default async function Dashboard() {
           <span className="muted">· {gate.reason}</span>
         </div>
       )}
+
+      <p className="muted">
+        Trend following trades rarely (roughly once a month per market) and wins less than half the time; the winners are several times
+        bigger than the losers.{" "}
+        {STRATEGIES.map((st) => {
+          const r = summarize(baseCalibration[st.name]);
+          return `Backtest record for ${st.name}: ${r.trades} trades, ${pct(r.winProbability)} wins, average win ${pct(r.avgWin)}, average loss ${pct(r.avgLoss)} per position.`;
+        }).join(" ")}
+      </p>
 
       <div className="actions">
         {state?.halted ? (
@@ -95,22 +104,21 @@ export default async function Dashboard() {
         <table>
           <thead>
             <tr>
-              <th>Market</th><th className="num">Size</th><th className="num">Entry</th><th className="num">Stop</th><th className="num">Target</th><th className="num">p(win)</th><th>Agents</th><th>Opened</th>
+              <th>Market</th><th className="num">Size</th><th className="num">Entry</th><th className="num">Stop</th><th className="num">p(win)</th><th>Strategy</th><th>Opened</th>
             </tr>
           </thead>
           <tbody>
             {positions.length === 0 && (
-              <tr><td colSpan={8} className="muted">None</td></tr>
+              <tr><td colSpan={7} className="muted">None</td></tr>
             )}
             {positions.map((p) => (
               <tr key={p.id}>
-                <td>{p.product_id}{p.exploration ? " *" : ""}</td>
+                <td>{p.product_id}</td>
                 <td className="num">{Number(p.size)}</td>
                 <td className="num">{Number(p.entry_price)}</td>
-                <td className="num">{Number(p.stop_price).toFixed(4)}</td>
-                <td className="num">{Number(p.take_profit_price).toFixed(4)}</td>
+                <td className="num">{Number(Number(p.stop_price).toPrecision(6))}</td>
                 <td className="num">{pct(Number(p.win_probability))}</td>
-                <td>{p.agents.join(", ")}</td>
+                <td>{p.strategy}</td>
                 <td>{when(p.opened_at)}</td>
               </tr>
             ))}
@@ -123,29 +131,29 @@ export default async function Dashboard() {
         <table>
           <thead>
             <tr>
-              <th>Closed</th><th>Market</th><th className="num">Entry</th><th className="num">Exit</th><th>Reason</th><th className="num">P/L</th><th className="num">p(win)</th><th className="num">JEV</th>
+              <th>Closed</th><th>Market</th><th className="num">Entry</th><th className="num">Exit</th><th>Reason</th><th className="num">P/L</th><th className="num">p(win)</th><th className="num">JEV</th><th>Strategy</th>
             </tr>
           </thead>
           <tbody>
             {trades.length === 0 && (
-              <tr><td colSpan={8} className="muted">No trades yet</td></tr>
+              <tr><td colSpan={9} className="muted">No trades yet</td></tr>
             )}
             {trades.slice(0, 30).map((t, i) => (
               <tr key={i}>
                 <td>{when(t.closed_at)}</td>
-                <td>{t.product_id}{t.exploration ? " *" : ""}</td>
+                <td>{t.product_id}</td>
                 <td className="num">{Number(t.entry_price)}</td>
                 <td className="num">{Number(t.exit_price)}</td>
-                <td>{t.exit_reason.replace("_", " ")}</td>
+                <td>{t.exit_reason.replaceAll("_", " ")}</td>
                 <td className={`num ${t.pnl > 0 ? "good" : "bad"}`}>{money(t.pnl)}</td>
                 <td className="num">{pct(Number(t.win_probability))}</td>
                 <td className="num">{t.jev_probability === null ? "–" : pct(Number(t.jev_probability))}</td>
+                <td>{t.strategy}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <p className="muted">* paper exploration trade (taken to gather data, not because it passed the expected-value check)</p>
 
       <h2>JEV accuracy</h2>
       <p className="muted">

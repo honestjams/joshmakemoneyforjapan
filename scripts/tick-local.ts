@@ -18,7 +18,6 @@ async function main() {
     decisionModel: new JevDecisionModel(),
     baseCalibration,
     initialCash: Number(process.env.PAPER_STARTING_BALANCE ?? "500"),
-    explore: process.env.PAPER_EXPLORATION !== "false",
   });
   console.log(JSON.stringify(result, null, 2));
 }

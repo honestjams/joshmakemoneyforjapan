@@ -8,13 +8,13 @@ import { JEV } from "@/config/settings";
 export interface TradeQuestion {
   question: string;
   productId: string;
+  strategy: string;
   entryPrice: number;
   stopPrice: number;
-  takeProfitPrice: number;
-  maxHoldHours: number;
-  /** Numeric market features the signal agents saw (RSI, ATR %, EMA gaps...). */
+  /** Numbers describing the setup (ATR %, breakout size, recent return...). */
   features: Record<string, number>;
-  agentReasons: string[];
+  /** The strategy agent's reason for the signal. */
+  reason: string;
 }
 
 export interface DecisionModel {

@@ -24,15 +24,13 @@ interface PositionRow {
   size: number;
   entry_price: number;
   stop_price: number;
-  take_profit_price: number;
   entry_fee: number;
   opened_at: string;
   stop_order_id: string | null;
+  strategy: string;
   win_probability: number;
   expected_value_pct: number;
-  agents: string[];
   jev_probability: number | null;
-  exploration: boolean;
 }
 
 const toPosition = (r: PositionRow): Position => ({
@@ -41,15 +39,13 @@ const toPosition = (r: PositionRow): Position => ({
   size: Number(r.size),
   entryPrice: Number(r.entry_price),
   stopPrice: Number(r.stop_price),
-  takeProfitPrice: Number(r.take_profit_price),
   entryFee: Number(r.entry_fee),
   openedAt: Date.parse(r.opened_at),
   stopOrderId: r.stop_order_id,
+  strategy: r.strategy,
   winProbability: Number(r.win_probability),
   expectedValuePct: Number(r.expected_value_pct),
-  agents: r.agents,
   jevProbability: r.jev_probability === null ? null : Number(r.jev_probability),
-  exploration: r.exploration,
 });
 
 const fromPosition = (p: Position, mode: Mode) => ({
@@ -59,15 +55,13 @@ const fromPosition = (p: Position, mode: Mode) => ({
   size: p.size,
   entry_price: p.entryPrice,
   stop_price: p.stopPrice,
-  take_profit_price: p.takeProfitPrice,
   entry_fee: p.entryFee,
   opened_at: new Date(p.openedAt).toISOString(),
   stop_order_id: p.stopOrderId,
+  strategy: p.strategy,
   win_probability: p.winProbability,
   expected_value_pct: p.expectedValuePct,
-  agents: p.agents,
   jev_probability: p.jevProbability,
-  exploration: p.exploration,
 });
 
 export class SupabaseStore implements Store {
@@ -115,11 +109,10 @@ export class SupabaseStore implements Store {
         fees: t.fees,
         pnl: t.pnl,
         exit_reason: t.exitReason,
+        strategy: t.strategy,
         win_probability: t.winProbability,
         expected_value_pct: t.expectedValuePct,
-        agents: t.agents,
         jev_probability: t.jevProbability,
-        exploration: t.exploration,
       }),
       "insert trade",
     );
@@ -143,16 +136,20 @@ export class SupabaseStore implements Store {
   }
 
   async tradeCalibration(): Promise<Calibration> {
-    const rows = check(await this.db.from("trades").select("agents, pnl").eq("mode", this.mode), "trade calibration");
-    return calibrationFromTrades((rows as { agents: string[]; pnl: number }[]).map((r) => ({ agents: r.agents, pnl: Number(r.pnl) })));
+    const rows = check(await this.db.from("trades").select("strategy, pnl, size, entry_price").eq("mode", this.mode), "trade calibration");
+    return calibrationFromTrades(
+      (rows as { strategy: string; pnl: number; size: number; entry_price: number }[]).map((r) => ({
+        strategy: r.strategy,
+        pnl: Number(r.pnl),
+        size: Number(r.size),
+        entryPrice: Number(r.entry_price),
+      })),
+    );
   }
 
-  /** Closed paper trades that passed the EV gate (exploration excluded), for the go-live check. */
-  async gatedPaperTrades(): Promise<{ pnl: number; size: number; entryPrice: number }[]> {
-    const rows = check(
-      await this.db.from("trades").select("pnl, size, entry_price").eq("mode", "paper").eq("exploration", false),
-      "gated paper trades",
-    );
+  /** Closed paper trades, for the go-live check. */
+  async paperTrades(): Promise<{ pnl: number; size: number; entryPrice: number }[]> {
+    const rows = check(await this.db.from("trades").select("pnl, size, entry_price").eq("mode", "paper"), "paper trades");
     return (rows as { pnl: number; size: number; entry_price: number }[]).map((r) => ({
       pnl: Number(r.pnl),
       size: Number(r.size),

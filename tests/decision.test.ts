@@ -1,52 +1,69 @@
 import { describe, expect, it } from "vitest";
-import { agentWinProbability, calibratedWinProbability, decide, expectedValuePct } from "@/lib/agents/decision";
-import { computeFeatures } from "@/lib/agents/signals";
+import { decide, expectedValuePct, summarize } from "@/lib/agents/decision";
 import { blendProbability } from "@/lib/agents/jev";
 import { researchView } from "@/lib/agents/research";
-import type { KnowledgeBrief, Signal } from "@/lib/types";
-import { HOUR, uptrend } from "./helpers";
+import { donchianBreakout } from "@/lib/agents/strategies";
+import type { KnowledgeBrief } from "@/lib/types";
+import { DAY, daily, goodCalibration, HOUR } from "./helpers";
 
-const long = (agent: string): Signal => ({ agent, direction: "long", confidence: 0.5, reason: "test" });
-
-describe("calibration", () => {
+describe("strategy records", () => {
   it("smooths small samples toward 50%", () => {
-    expect(agentWinProbability({ a: { wins: 3, losses: 0 } }, "a")).toBeCloseTo(0.8);
-    expect(agentWinProbability({}, "unknown")).toBe(0.5);
+    expect(summarize({ wins: 3, losses: 0, winSum: 0.3, lossSum: 0 }).winProbability).toBeCloseTo(0.8);
+    expect(summarize(undefined).winProbability).toBe(0.5);
   });
-  it("weights agents by sample size", () => {
-    const p = calibratedWinProbability({ a: { wins: 70, losses: 30 }, b: { wins: 0, losses: 0 } }, [long("a"), long("b")]);
-    expect(p).toBeGreaterThan(0.65);
+  it("averages win and loss sizes", () => {
+    const s = summarize({ wins: 2, losses: 4, winSum: 0.5, lossSum: 0.2 });
+    expect(s.avgWin).toBeCloseTo(0.25);
+    expect(s.avgLoss).toBeCloseTo(0.05);
   });
 });
 
 describe("expectedValuePct", () => {
   it("shows a 65% win rate can still lose money when losses are bigger than wins", () => {
-    // Target +0.5%, stop -1.5%: wins 65% of the time but negative after fees.
-    expect(expectedValuePct(0.65, 100, 98.5, 100.5)).toBeLessThan(0);
+    expect(expectedValuePct(0.65, 0.01, 0.03)).toBeLessThan(0);
   });
-  it("is positive with a real edge", () => {
-    expect(expectedValuePct(0.6, 100, 98, 102)).toBeGreaterThan(0);
+  it("shows a 40% win rate can make money when winners are much bigger (trend following)", () => {
+    expect(expectedValuePct(0.4, 0.3, 0.08)).toBeGreaterThan(0);
   });
 });
 
 describe("decide", () => {
-  const candles = uptrend(300, 0, Infinity);
-  const features = computeFeatures(candles);
-  const i = candles.length - 1;
-  const input = { productId: "BTCAUD", features, index: i, entryPrice: candles[i].close };
-
-  it("skips when no agent sees a setup", () => {
-    expect(decide({ ...input, signals: [], calibration: {} }).action).toBe("skip");
+  const strategy = "donchian_55_20_1d";
+  it("refuses strategies without enough measured trades", () => {
+    expect(decide({ strategy, calibration: {} }).action).toBe("skip");
   });
-  it("skips uncalibrated agents (50%) under the 55% bar", () => {
-    expect(decide({ ...input, signals: [long("a")], calibration: {} }).action).toBe("skip");
+  it("refuses strategies whose record has negative expected value", () => {
+    expect(decide({ strategy, calibration: { [strategy]: { wins: 10, losses: 20, winSum: 0.5, lossSum: 1.5 } } }).action).toBe("skip");
   });
-  it("enters when calibrated probability and EV clear the bar", () => {
-    const d = decide({ ...input, signals: [long("a")], calibration: { a: { wins: 300, losses: 100 } } });
+  it("enters with a proven record", () => {
+    const d = decide({ strategy, calibration: goodCalibration });
     expect(d.action).toBe("enter");
+    if (d.action === "enter") expect(d.expectedValuePct).toBeGreaterThan(0.1);
   });
-  it("exploration takes the trade anyway (paper only, enforced by the engine)", () => {
-    expect(decide({ ...input, signals: [long("a")], calibration: {}, explore: true }).action).toBe("enter");
+  it("lets JEV and research move the probability, within bounds", () => {
+    const base = decide({ strategy, calibration: goodCalibration });
+    const nudged = decide({ strategy, calibration: goodCalibration, probabilityAdjustment: -0.05, blend: (p) => blendProbability(p, 0.2) });
+    expect(base.action === "enter" && nudged.action === "enter" && nudged.winProbability < base.winProbability).toBe(true);
+  });
+});
+
+describe("Donchian strategy agent", () => {
+  const s = donchianBreakout("1d", 55, 20, 3);
+  const flat = Array.from({ length: 84 }, (_, i) => 100 + (i % 5));
+
+  it("enters only on a close above the prior 55-day high", () => {
+    expect(s.entry(daily(0, [...flat, 104]))).toBeNull(); // equals the high, not above
+    expect(s.entry(daily(0, [...flat, 105]))).toMatch(/broke the 55-candle high/);
+  });
+  it("exits on a close below the prior 20-day low", () => {
+    expect(s.exit(daily(0, [...flat, 100]))).toBeNull();
+    expect(s.exit(daily(0, [...flat, 99]))).toMatch(/fell below the 20-candle low/);
+  });
+  it("puts the emergency stop 3 ATRs below entry", () => {
+    const c = daily(0, [...flat, 105], 0.01);
+    expect(s.stopPrice(c, 105)).toBeLessThan(105);
+    expect(s.stopPrice(c, 105)).toBeGreaterThan(80);
+    expect(s.candleMs).toBe(DAY);
   });
 });
 

@@ -6,15 +6,16 @@ Multi-agent crypto trading bot for CoinJar Exchange. Next.js on Vercel, Supabase
 
 - `npm test`: unit tests (vitest)
 - `npm run typecheck`
-- `npm run backtest`: walk-forward backtest on real CoinJar history (needs network)
+- `npm run backtest`: walk-forward backtest through the real engine on CoinJar history since 2019 (needs network; caches in `data-cache/`)
 - `npm run backtest -- --write-calibration`: also refreshes `src/config/calibration.json`
+- `npx tsx scripts/research/trend.ts 1d 1 1 3`: compare trend rules (interval, fill lag, cost multiplier, stop ATR)
 - `npm run tick:local`: one bot cycle on live prices with a throwaway paper account (no DB)
 
 ## Rules that must not be loosened
 
 - Never put more than 10% of equity in one trade, and never risk losing more than 10% of equity on one trade (`RISK` in `src/config/settings.ts`, enforced in `src/lib/agents/risk.ts`). Never round a size up to meet an exchange minimum; skip the trade instead.
-- No AI component (signal agents, research brief, JEV) may bypass the risk manager or place orders directly.
-- Paper exploration (`explore`) must never apply to a live broker.
+- No AI component (strategy agents, research brief, JEV) may bypass the risk manager or place orders directly.
+- Any new strategy must beat costs on unseen data in `npm run backtest` before it goes into `STRATEGIES`. Intraday strategies on CoinJar lost money on fees and spread in every test (see README).
 - Live trading needs both `TRADING_MODE=live` and `LIVE_TRADING_ACKNOWLEDGED=yes`, and `/api/tick` refuses live mode until the paper record passes `GO_LIVE` (settings.ts). The user's instruction: paper trade until returns are positive. Don't lower `GO_LIVE` without their explicit say-so.
 - Never ask the user to paste API keys into chat. Keys go in Vercel env vars.
 

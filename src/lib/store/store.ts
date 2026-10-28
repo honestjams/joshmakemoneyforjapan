@@ -20,7 +20,7 @@ export interface Store {
   /** Removes the open position and records the closed trade. */
   closePosition(trade: ClosedTrade): Promise<void>;
   latestBrief(): Promise<KnowledgeBrief | null>;
-  /** Wins/losses per signal agent from this mode's closed trades. */
+  /** Win/loss record per strategy from this mode's closed trades. */
   tradeCalibration(): Promise<Calibration>;
   logRun(run: RunLog): Promise<void>;
 }
@@ -41,14 +41,18 @@ export function utcDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/** Every agent that agreed on a trade shares its outcome. */
-export function calibrationFromTrades(trades: Pick<ClosedTrade, "agents" | "pnl">[]): Calibration {
+/** Per-strategy win/loss record from closed trades (returns relative to the position's cost). */
+export function calibrationFromTrades(trades: Pick<ClosedTrade, "strategy" | "pnl" | "size" | "entryPrice">[]): Calibration {
   const cal: Calibration = {};
   for (const t of trades) {
-    for (const a of t.agents) {
-      cal[a] ??= { wins: 0, losses: 0 };
-      if (t.pnl > 0) cal[a].wins++;
-      else cal[a].losses++;
+    const rec = (cal[t.strategy] ??= { wins: 0, losses: 0, winSum: 0, lossSum: 0 });
+    const ret = t.pnl / (t.size * t.entryPrice);
+    if (ret > 0) {
+      rec.wins++;
+      rec.winSum += ret;
+    } else {
+      rec.losses++;
+      rec.lossSum -= ret;
     }
   }
   return cal;
@@ -57,10 +61,12 @@ export function calibrationFromTrades(trades: Pick<ClosedTrade, "agents" | "pnl"
 export function mergeCalibration(...sources: Calibration[]): Calibration {
   const out: Calibration = {};
   for (const src of sources) {
-    for (const [agent, rec] of Object.entries(src)) {
-      out[agent] ??= { wins: 0, losses: 0 };
-      out[agent].wins += rec.wins;
-      out[agent].losses += rec.losses;
+    for (const [name, rec] of Object.entries(src)) {
+      const o = (out[name] ??= { wins: 0, losses: 0, winSum: 0, lossSum: 0 });
+      o.wins += rec.wins;
+      o.losses += rec.losses;
+      o.winSum += rec.winSum;
+      o.lossSum += rec.lossSum;
     }
   }
   return out;

@@ -23,7 +23,7 @@ export function tradingMode(): TradingMode {
   return "live";
 }
 
-export const baseCalibration: Calibration = calibrationFile.agents;
+export const baseCalibration: Calibration = calibrationFile.strategies;
 
 let rulesCache: { at: number; rules: Map<string, ProductRules> } | null = null;
 
@@ -49,6 +49,5 @@ export function productionDeps(store?: Store): EngineDeps {
     decisionModel: new JevDecisionModel(),
     baseCalibration,
     initialCash: Number(process.env.PAPER_STARTING_BALANCE ?? "500"),
-    explore: mode === "paper" && process.env.PAPER_EXPLORATION !== "false",
   };
 }

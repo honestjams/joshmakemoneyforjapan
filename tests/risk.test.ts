@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { accountBlock, assessEntry, checkExit, roundDownToIncrement } from "@/lib/agents/risk";
-import { STRATEGY } from "@/config/settings";
-import { candle, HOUR, position, proposal, state } from "./helpers";
+import { accountBlock, assessEntry, roundDownToIncrement, stopFill } from "@/lib/agents/risk";
+import { goLiveCheck } from "@/lib/stats";
+import { candle, position, proposal, state } from "./helpers";
 
 const portfolio = (equity: number, cash = equity) => ({ equity, availableCash: cash, openPositions: [] });
 const base = { spreadPct: 0.001, now: Date.UTC(2026, 9, 2) };
@@ -18,7 +18,13 @@ describe("assessEntry", () => {
 
   it("rejects instead of rounding up when the exchange minimum exceeds 10% of a $50 account", () => {
     // BTCAUD at $115k with a 0.0001 BTC minimum = $11.50, but 10% of $50 is $5.
-    const v = assessEntry({ ...base, proposal: proposal({ entryPrice: 115_000, stopPrice: 113_000, takeProfitPrice: 117_000 }), portfolio: portfolio(50), state: state({ peakEquity: 50, dayStartEquity: 50 }), sizeIncrement: 0.0001 });
+    const v = assessEntry({
+      ...base,
+      proposal: proposal({ entryPrice: 115_000, stopPrice: 105_000 }),
+      portfolio: portfolio(50),
+      state: state({ peakEquity: 50, dayStartEquity: 50 }),
+      sizeIncrement: 0.0001,
+    });
     expect(v.approved).toBe(false);
     if (!v.approved) expect(v.reason).toMatch(/exchange minimum/);
   });
@@ -35,19 +41,20 @@ describe("assessEntry", () => {
     expect(v.approved && v.notional).toBeLessThanOrEqual(20);
   });
 
-  it("enforces max open positions, one position per product, cooldown and spread", () => {
-    const open = [position({ productId: "ETHAUD" }), position({ productId: "SOLAUD" }), position({ productId: "XRPAUD" })];
-    expect(assessEntry({ ...base, proposal: proposal(), portfolio: { ...portfolio(500), openPositions: open }, state: state(), sizeIncrement: 0.00001 }).approved).toBe(false);
-    expect(assessEntry({ ...base, proposal: proposal(), portfolio: { ...portfolio(500), openPositions: [position()] }, state: state(), sizeIncrement: 0.00001 }).approved).toBe(false);
-    expect(assessEntry({ ...base, proposal: proposal(), portfolio: portfolio(500), state: state({ lastExitAt: { BTCAUD: base.now - 1000 } }), sizeIncrement: 0.00001 }).approved).toBe(false);
-    expect(assessEntry({ ...base, spreadPct: 0.01, proposal: proposal(), portfolio: portfolio(500), state: state(), sizeIncrement: 0.00001 }).approved).toBe(false);
+  it("enforces max open positions, one position per market, cooldown, spread and a valid stop", () => {
+    const open = ["ETHAUD", "SOLAUD", "XRPAUD", "LTCAUD"].map((productId) => position({ productId }));
+    const ok = { ...base, proposal: proposal(), portfolio: portfolio(500), state: state(), sizeIncrement: 0.00001 };
+    expect(assessEntry({ ...ok, portfolio: { ...portfolio(500), openPositions: open } }).approved).toBe(false);
+    expect(assessEntry({ ...ok, portfolio: { ...portfolio(500), openPositions: [position()] } }).approved).toBe(false);
+    expect(assessEntry({ ...ok, state: state({ lastExitAt: { BTCAUD: base.now - 1000 } }) }).approved).toBe(false);
+    expect(assessEntry({ ...ok, spreadPct: 0.01 }).approved).toBe(false);
+    expect(assessEntry({ ...ok, proposal: proposal({ stopPrice: 101_000 }) }).approved).toBe(false);
   });
 });
 
 describe("accountBlock", () => {
   it("halts at the drawdown kill switch", () => {
-    const b = accountBlock(state({ peakEquity: 100, dayStartEquity: 80 }), 79);
-    expect(b?.haltNow).toBe(true);
+    expect(accountBlock(state({ peakEquity: 100, dayStartEquity: 80 }), 79)?.haltNow).toBe(true);
   });
   it("pauses for the day at the daily loss limit without halting", () => {
     const b = accountBlock(state({ peakEquity: 100, dayStartEquity: 100 }), 94);
@@ -59,22 +66,16 @@ describe("accountBlock", () => {
   });
 });
 
-describe("checkExit", () => {
-  const pos = position({ openedAt: 0 });
-  it("assumes the stop hit first when a candle touches both levels", () => {
-    const c = { time: 0, open: 100_000, high: 103_000, low: 97_000, close: 100_000, volume: 1 };
-    expect(checkExit(pos, c, HOUR)?.reason).toBe("stop_loss");
+describe("stopFill", () => {
+  const pos = position({ stopPrice: 90_000 });
+  it("ignores candles that stay above the stop", () => {
+    expect(stopFill(pos, candle(0, 100_000))).toBeNull();
   });
-  it("fills a gap-down stop at the open, not the stop price", () => {
-    const c = { time: 0, open: 95_000, high: 95_500, low: 94_000, close: 95_000, volume: 1 };
-    const exit = checkExit(pos, c, HOUR)!;
-    expect(exit.price).toBeLessThan(95_000);
+  it("fills at the stop less slippage when touched", () => {
+    expect(stopFill(pos, { ...candle(0, 92_000), low: 89_000 })).toBeCloseTo(90_000 * 0.995);
   });
-  it("takes profit at the target", () => {
-    expect(checkExit(pos, { ...candle(0, 101_000), high: 102_500 }, HOUR)?.reason).toBe("take_profit");
-  });
-  it("time-stops after the max hold", () => {
-    expect(checkExit(pos, candle(STRATEGY.maxHoldMs, 100_000, 0), HOUR)?.reason).toBe("time_stop");
+  it("fills a gap-down at the open, not the stop price", () => {
+    expect(stopFill(pos, { time: 0, open: 85_000, high: 86_000, low: 84_000, close: 85_000, volume: 1 })).toBeCloseTo(85_000 * 0.995);
   });
 });
 
@@ -86,11 +87,10 @@ it("roundDownToIncrement never rounds up", () => {
 
 describe("goLiveCheck", () => {
   const t = (pnl: number) => ({ pnl, size: 1, entryPrice: 100 });
-  it("blocks live trading until there are enough profitable EV-gated paper trades", async () => {
-    const { goLiveCheck } = await import("@/lib/stats");
+  it("blocks live trading until there are enough profitable paper trades", () => {
     expect(goLiveCheck([]).ready).toBe(false);
     expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1 : -1.2))).ready).toBe(false); // net negative
-    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1.05 : -1))).ready).toBe(false); // PF 1.05 < 1.1
+    expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1.05 : -1))).ready).toBe(false); // profit factor 1.05 < 1.1
     expect(goLiveCheck(Array.from({ length: 40 }, (_, i) => t(i % 2 ? 1.5 : -1))).ready).toBe(true);
   });
 });

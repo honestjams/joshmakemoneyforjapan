@@ -1,96 +1,141 @@
 /**
- * Walk-forward backtest on real CoinJar history.
+ * Walk-forward backtest of the live strategies on real CoinJar history,
+ * through the same engine code the bot runs in production.
  *
- *   npm run backtest                         # 180 days, $50 and $500 accounts
- *   npm run backtest -- --days 365 --cash 200
- *   npm run backtest -- --write-calibration  # save measured hit rates for the live bot
+ *   npm run backtest                          # $150 and $500 accounts
+ *   npm run backtest -- --cash 50,150,500
+ *   npm run backtest -- --write-calibration   # refresh src/config/calibration.json from full history
  *
- * Phase 1 (first 60%): measure each signal agent's hit rate -> calibration.
- * Phase 2 (last 40%, unseen): run the real engine with that calibration.
+ * 1. Calibrate each strategy on history before --split (default 2023-01-01).
+ * 2. Run the engine from --split to today with that calibration (unseen data).
+ * 3. Also run 2020 -> today to see how 5-month windows have played out across bull and bear markets.
  */
-import { writeFileSync, mkdirSync } from "node:fs";
-import path from "node:path";
-import { STRATEGY } from "../src/config/settings";
-import { simulate, studyAgents, toCalibration } from "../src/lib/backtest";
+import { writeFileSync } from "node:fs";
+import { MARKETS } from "../src/config/settings";
+import { STRATEGIES as ALL_STRATEGIES } from "../src/lib/agents/strategies";
+import { RISK } from "../src/config/settings";
+import { simulate, type SimulationResult, studyStrategy, toCalibration, HistoricalMarket } from "../src/lib/backtest";
+import { fetchProductRules } from "../src/lib/exchange/coinjar";
 import { tradeStats } from "../src/lib/stats";
-import { coinjarData, fetchProductRules } from "../src/lib/exchange/coinjar";
 import type { Candle } from "../src/lib/types";
+import { coinjarHistory } from "./research/data";
 
 function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : fallback;
 }
 
-const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+const pct = (x: number) => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
 const money = (x: number) => `${x < 0 ? "-" : ""}$${Math.abs(x).toFixed(2)}`;
+const DAY = 86_400_000;
 
 async function main() {
-  const days = Number(arg("days", "365"));
-  const cashLevels = (arg("cash") ?? "50,500").split(",").map(Number);
-  const writeCalibration = process.argv.includes("--write-calibration");
+  const cashLevels = (arg("cash") ?? "150,500").split(",").map(Number);
+  // Research knobs: --only 1d (strategy intervals to include), --max-positions 4.
+  const only = arg("only")?.split(",");
+  const STRATEGIES = only ? ALL_STRATEGIES.filter((s) => only.includes(s.interval)) : ALL_STRATEGIES;
+  if (arg("max-positions")) RISK.maxOpenPositions = Number(arg("max-positions"));
+  console.log(`Strategies: ${STRATEGIES.map((s) => s.name).join(", ")}; max open positions ${RISK.maxOpenPositions}`);
+  const split = Date.parse(arg("split", "2023-01-01")!);
+  const intervals = [...new Set(STRATEGIES.map((s) => s.interval))];
+  const tickerInterval = intervals.includes("4h") ? "4h" : intervals[0];
 
-  const now = Date.now();
-  const from = now - days * 86_400_000;
-  console.log(`Fetching ${days} days of ${STRATEGY.candleInterval} candles from CoinJar...`);
   const series = new Map<string, Candle[]>();
-  for (const pid of STRATEGY.products) series.set(pid, await coinjarData.candles(pid, STRATEGY.candleInterval, from, now));
+  for (const pid of MARKETS.products) {
+    for (const interval of intervals) series.set(HistoricalMarket.key(pid, interval), await coinjarHistory(pid, interval, 2550));
+  }
   const rules = await fetchProductRules();
-  for (const [pid, c] of series) console.log(`  ${pid}: ${c.length} candles, ${c[0]?.close} -> ${c.at(-1)?.close}`);
+  const now = Date.now();
 
-  const warmup = from + STRATEGY.lookbackCandles * STRATEGY.candleMs;
-  const split = warmup + (now - warmup) * 0.6;
+  // 1. Calibration on data before the split only.
+  const studyBefore = STRATEGIES.flatMap((s) => MARKETS.products.flatMap((pid) => studyStrategy(s, pid, series.get(HistoricalMarket.key(pid, s.interval))!, -Infinity, split)));
+  const calibration = toCalibration(studyBefore.filter((t) => t.exitTime < split));
+  console.log(`Calibration (trades closed before ${new Date(split).toISOString().slice(0, 10)}):`);
+  printCalibration(calibration);
 
-  console.log(`\nPhase 1: agent hit rates, ${new Date(warmup).toISOString().slice(0, 10)} -> ${new Date(split).toISOString().slice(0, 10)} (training)`);
-  const train = studyAgents(series, warmup, split);
-  printStudy(train);
-  console.log(`\nSame agents on the unseen period (for comparison):`);
-  const test = studyAgents(series, split, now);
-  printStudy(test);
-
-  const calibration = toCalibration(train);
-  const results: Record<string, unknown> = { days, train, test };
-  const runs = [
-    ...cashLevels.map((cash) => ({ cash, explore: false })),
-    { cash: Math.max(...cashLevels), explore: true },
-  ];
-  for (const { cash, explore } of runs) {
-    console.log(`\nPhase 2: real engine on unseen period, $${cash}, ${explore ? "paper EXPLORATION (EV gate off)" : "normal (EV gate on)"}`);
-    const sim = await simulate({ series, rules, calibration, startCash: cash, fromMs: split, toMs: now - STRATEGY.candleMs, explore });
-    const s = tradeStats(sim.trades);
-    console.log(
-      `  trades ${s.trades} | win rate ${pct(s.winRate)} | avg win ${money(s.avgWin)} | avg loss ${money(s.avgLoss)} | ` +
-        `profit factor ${s.profitFactor.toFixed(2)} | avg return/trade ${pct(s.avgReturnPct)}`,
-    );
-    console.log(
-      `  equity ${money(sim.startCash)} -> ${money(sim.endEquity)} (${pct(sim.endEquity / sim.startCash - 1)}), ` +
-        `max drawdown ${pct(sim.maxDrawdownPct)}${sim.halted ? ", KILL SWITCH HIT" : ""}`,
-    );
-    const byReason = sim.trades.reduce<Record<string, number>>((m, t) => ((m[t.exitReason] = (m[t.exitReason] ?? 0) + 1), m), {});
-    if (sim.trades.length) console.log(`  exits: ${JSON.stringify(byReason)}`);
-    results[`sim_${cash}${explore ? "_explore" : ""}`] = { stats: s, endEquity: sim.endEquity, maxDrawdownPct: sim.maxDrawdownPct, exits: byReason };
+  // 2. Unseen period through the real engine.
+  for (const cash of cashLevels) {
+    const sim = await simulate({ series, tickerInterval, rules, calibration, strategies: STRATEGIES, products: MARKETS.products, startCash: cash, fromMs: split, toMs: now });
+    report(`Unseen period ${new Date(split).toISOString().slice(0, 10)} -> today, $${cash} paper account`, sim);
   }
 
-  mkdirSync("backtest-results", { recursive: true });
-  const out = path.join("backtest-results", `backtest-${new Date(now).toISOString().slice(0, 16).replace(/:/g, "")}.json`);
-  writeFileSync(out, JSON.stringify(results, null, 2));
-  console.log(`\nSaved ${out}`);
+  // 3. Full history (2020 ->), calibrated on everything: how did 5-month windows go?
+  const fullCal = toCalibration(STRATEGIES.flatMap((s) => MARKETS.products.flatMap((pid) => studyStrategy(s, pid, series.get(HistoricalMarket.key(pid, s.interval))!))));
+  const fullStart = Date.parse("2020-03-01");
+  const full = await simulate({ series, tickerInterval, rules, calibration: fullCal, strategies: STRATEGIES, products: MARKETS.products, startCash: 500, fromMs: fullStart, toMs: now });
+  report("Full history 2020-03 -> today, $500 (rules are textbook; calibration in-sample)", full);
+  rollingWindows(full, 152);
 
-  if (writeCalibration) {
-    const full = studyAgents(series, warmup, now);
-    const file = {
-      generatedAt: new Date(now).toISOString(),
-      source: `studyAgents over ${days} days of CoinJar ${STRATEGY.candleInterval} candles (${STRATEGY.products.join(", ")}), stop ${STRATEGY.stopAtr} ATR / target ${STRATEGY.takeProfitAtr} ATR`,
-      agents: toCalibration(full),
-    };
-    writeFileSync("src/config/calibration.json", JSON.stringify(file, null, 2) + "\n");
-    console.log("Wrote src/config/calibration.json");
+  if (process.argv.includes("--write-calibration")) {
+    writeFileSync(
+      "src/config/calibration.json",
+      JSON.stringify(
+        {
+          generatedAt: new Date(now).toISOString(),
+          source: `studyStrategy over CoinJar history since ${new Date(series.get(HistoricalMarket.key("BTCAUD", "1d"))![0].time).toISOString().slice(0, 10)} (${MARKETS.products.join(", ")}), net of 0.1% fees, 0.1% half-spread and 0.5% stop slippage`,
+          strategies: fullCal,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    console.log("\nWrote src/config/calibration.json");
   }
 }
 
-function printStudy(study: ReturnType<typeof studyAgents>) {
-  for (const [agent, s] of Object.entries(study)) {
-    const n = s.wins + s.losses;
-    console.log(`  ${agent.padEnd(16)} ${String(n).padStart(4)} trades, win rate ${pct(s.wins / n).padStart(6)}, avg net return ${pct(s.avgReturn)}`);
+function printCalibration(cal: ReturnType<typeof toCalibration>) {
+  for (const [name, r] of Object.entries(cal)) {
+    const n = r.wins + r.losses;
+    const avgWin = r.wins ? r.winSum / r.wins : 0;
+    const avgLoss = r.losses ? r.lossSum / r.losses : 0;
+    console.log(`  ${name.padEnd(22)} ${String(n).padStart(4)} trades, win rate ${pct(r.wins / n)}, avg win ${pct(avgWin)}, avg loss ${pct(-avgLoss)}, avg/trade ${pct((r.winSum - r.lossSum) / n)}`);
+  }
+}
+
+function report(title: string, sim: SimulationResult) {
+  const s = tradeStats(sim.trades);
+  console.log(`\n${title}`);
+  console.log(
+    `  ${money(sim.startCash)} -> ${money(sim.endEquity)} (${pct(sim.endEquity / sim.startCash - 1)}), max drawdown ${pct(-sim.maxDrawdownPct)}${sim.halted ? ", KILL SWITCH HIT" : ""}`,
+  );
+  console.log(`  trades ${s.trades}, win rate ${pct(s.winRate)}, avg win ${money(s.avgWin)}, avg loss ${money(s.avgLoss)}, profit factor ${s.profitFactor.toFixed(2)}`);
+  const byYear = new Map<number, number[]>();
+  for (const p of sim.curve) {
+    const y = new Date(p.t).getUTCFullYear();
+    if (!byYear.has(y)) byYear.set(y, [p.equity, p.equity]);
+    byYear.get(y)![1] = p.equity;
+  }
+  let prevEnd = sim.startCash;
+  const parts: string[] = [];
+  for (const [y, [, end]] of byYear) {
+    parts.push(`${y} ${pct(end / prevEnd - 1)}`);
+    prevEnd = end;
+  }
+  console.log(`  by year: ${parts.join(" | ")}`);
+  const byStrategy = new Map<string, number[]>();
+  for (const t of sim.trades) byStrategy.set(t.strategy, [...(byStrategy.get(t.strategy) ?? []), t.pnl]);
+  for (const [name, pnls] of byStrategy) console.log(`  ${name}: ${pnls.length} trades, net ${money(pnls.reduce((a, b) => a + b, 0))}`);
+}
+
+/** Return over every `days`-long window starting each week. */
+function rollingWindows(sim: SimulationResult, days: number) {
+  const rets: number[] = [];
+  const c = sim.curve;
+  let i = 0;
+  let j = 0;
+  for (let start = c[0].t; ; start += 7 * DAY) {
+    while (i < c.length && c[i].t < start) i++;
+    while (j < c.length && c[j].t < start + days * DAY) j++;
+    if (j >= c.length) break;
+    rets.push(c[j].equity / c[i].equity - 1);
+  }
+  rets.sort((a, b) => a - b);
+  const q = (p: number) => rets[Math.min(rets.length - 1, Math.floor(p * rets.length))];
+  const positive = rets.filter((r) => r > 0).length / rets.length;
+  console.log(`\n${days}-day windows (${rets.length} starting weekly): profitable ${pct(positive)} of the time`);
+  console.log(`  worst ${pct(q(0))}, 10th pct ${pct(q(0.1))}, median ${pct(q(0.5))}, 90th pct ${pct(q(0.9))}, best ${pct(q(1))}`);
+  for (const stake of [150, 500, 1000]) {
+    console.log(`  on $${stake}: median ${money(stake * q(0.5))}, 10th pct ${money(stake * q(0.1))}, 90th pct ${money(stake * q(0.9))}`);
   }
 }
 

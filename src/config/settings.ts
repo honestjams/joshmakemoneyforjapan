@@ -2,7 +2,7 @@
  * Every tunable number in the bot lives here so changes are visible in one diff.
  *
  * RISK rules are enforced by plain code in src/lib/agents/risk.ts. No AI layer
- * (signal agents, research brief, JEV) can loosen them.
+ * (strategies, research brief, JEV) can loosen them.
  */
 export const RISK = {
   /** Your rule: never put more than 10% of remaining capital into one trade. */
@@ -13,41 +13,45 @@ export const RISK = {
   dailyLossLimitPct: 0.05,
   /** Kill switch: halt all trading if equity falls this far below its peak. Needs a manual reset. */
   maxDrawdownPct: 0.2,
-  maxOpenPositions: 3,
+  /** One per market. With 10% each, at most 40% of equity is ever in the market. */
+  maxOpenPositions: 4,
   /** Skip markets whose bid/ask spread is wider than this (thin liquidity = hidden cost). */
   maxSpreadPct: 0.004,
 };
 
-export const STRATEGY = {
+export const MARKETS = {
   /** CoinJar's most active AUD markets. */
   products: ["BTCAUD", "ETHAUD", "SOLAUD", "XRPAUD"],
-  /**
-   * 1h, not 15m: CoinJar's 15-minute moves (~0.15-0.2%) are smaller than a
-   * round trip's fees + spread (~0.4%), so 15m trading loses on costs alone.
-   */
-  candleInterval: "1h",
-  candleMs: 60 * 60 * 1000,
-  /** Candles fetched per evaluation (enough for EMA-200 to settle). */
-  lookbackCandles: 300,
-  /** Stop-loss distance in ATRs below entry. */
-  stopAtr: 2,
-  /** Take-profit distance in ATRs above entry. */
-  takeProfitAtr: 2,
-  /** Close anything still open after this long. */
-  maxHoldMs: 24 * 60 * 60 * 1000,
-  /** Wait this long after closing a product before trading it again. */
-  reentryCooldownMs: 2 * 60 * 60 * 1000,
-  /** Only trade when the calibrated chance of hitting take-profit first is at least this. */
-  minWinProbability: 0.55,
-  /** Only trade when expected value after fees/spread is at least this (0.001 = +0.1% per trade). */
+  /** Wait this long after closing a market before trading it again. */
+  reentryCooldownMs: 4 * 60 * 60 * 1000,
+};
+
+/**
+ * Donchian trend following (see scripts/research/trend.ts). Buy when the
+ * close breaks above the highest close of the last `entryLookback` candles;
+ * sell when it closes below the lowest close of the last `exitLookback`
+ * candles. An exchange-side emergency stop sits `stopAtr` ATRs below entry.
+ */
+export const TREND = {
+  entryLookback: 55,
+  exitLookback: 20,
+  stopAtr: 3,
+};
+
+export const DECISION = {
+  /** Only trade when expected return per trade (after fees and spread) is at least this. 0.001 = +0.1%. */
   minExpectedValuePct: 0.001,
+  /** A strategy needs at least this many measured trades before the bot trusts its numbers. */
+  minCalibrationTrades: 20,
 };
 
 export const FEES = {
   /** CoinJar Exchange, $0-$100k monthly volume, AUD pairs. Maker and taker are both 0.10%. */
   takerRate: 0.001,
-  /** Allowance for slippage when a stop-loss fills below its trigger price. */
-  stopSlippagePct: 0.002,
+  /** Allowance for slippage when a stop-loss fills below its trigger price (CoinJar's books are thin). */
+  stopSlippagePct: 0.005,
+  /** Half the bid/ask spread, for backtests. CoinJar AUD spreads measured 0.15-0.28% (Oct 2026). */
+  backtestHalfSpread: 0.001,
 };
 
 export const RESEARCH = {
@@ -62,8 +66,7 @@ export const RESEARCH = {
 
 /**
  * Your rule: paper trade until returns are positive. Live mode refuses to run
- * until the paper account's EV-gated trades (exploration trades excluded)
- * clear every bar below.
+ * until the paper account's closed trades clear every bar below.
  */
 export const GO_LIVE = {
   minPaperTrades: 30,
