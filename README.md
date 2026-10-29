@@ -34,7 +34,7 @@ Every 5 minutes, Supabase pg_cron calls `POST /api/tick`, which runs one cycle (
         │
         ├─► risk manager (plain code, final veto)
         │     ≤10% of equity per trade · ≤10% max loss per trade · one position per market (max 4)
-        │     −5% in a day: no new trades · −10% in a day: sell everything · −20% from peak: halt
+        │     −5% in a day: no new trades · −10% in a day: sell everything · −20% real losses: halt
         │     never rounds up to meet exchange minimums
         │
         └─► execution agent ── paper broker, or CoinJar market orders + exchange-side stop-loss
@@ -101,7 +101,7 @@ npx tsx scripts/research/trend.ts 1d 1 1 3   # rule comparison: interval, fill l
 
 - **Per trade:** ≤10% of equity in, and a worst-case loss of ≤10% of equity (in practice ~1–2%, because of the emergency stop).
 - **Per day (Sydney time):** down 5% stops new trades for the day; down **10% sells everything** and waits for tomorrow.
-- **Overall:** a 20% drop from the peak halts the bot until you press Resume.
+- **Overall:** losing 20% of the money put in (real losses, taken or not; giving back unrealised profit doesn't count) halts the bot until you press Resume.
 - **Sell everything:** the dashboard's "Sell all positions & halt" button sells every position at market and halts.
 - **One run at a time:** a lock stops two runs (or a run and a button press) trading at once.
 
@@ -122,7 +122,11 @@ To switch over:
 
 The live order path follows CoinJar's documented API but hasn't yet been run against a real account. Watch the first trades closely.
 
-## Research data
+## Research
+
+`docs/research-log.md` records every study (what was tested, how, what was decided), including robustness checks on Binance data back to 2017 and the 2018 crash (strategy −6.7% vs market −61% to −83%).
+
+### Research data
 
 Every run also saves CoinJar's bid/ask next to Binance's price converted to AUD (`quotes` table, kept 90 days). This is for testing later whether CoinJar's prices lag global ones, the one idea that could support more frequent trading. It never affects trades.
 

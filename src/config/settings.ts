@@ -15,6 +15,18 @@ export const RISK = {
   maxDailyLossPct: 0.1,
   /** Kill switch: halt all trading if equity falls this far below its peak. Needs a manual reset. */
   maxDrawdownPct: 0.2,
+  /**
+   * What the kill switch measures. "mark": account value at market prices, so
+   * a winning trade giving back unrealised profit counts as a drawdown.
+   * "cost": open positions count at no more than what was paid, so only real
+   * losses (taken or not) count.
+   *
+   * "cost" since 29 Oct 2026: on Binance 2021-2026 the "mark" switch halted
+   * the bot for good after its best trade in 2021 gave back part of its gain,
+   * missing 2023-24 (+553% vs +226% over the period). The 10%-a-day rule still
+   * uses market prices, so a fast collapse of a winner still sells everything.
+   */
+  drawdownBasis: "cost" as "mark" | "cost",
   /** With 10% each, at most 40% of equity is ever in the market. (5 made more in backtests but drew down 18%, too close to the kill switch.) */
   maxOpenPositions: 4,
   /** Skip a trade when the bid/ask spread is wider than this. DOGEAUD usually sits around 0.45%. */

@@ -24,12 +24,12 @@ export function roundDownToIncrement(size: number, increment: number): number {
  * blocked, or null. `haltNow` is true when the account should be halted until
  * a person resets it.
  */
-export function accountBlock(state: BotState, equity: number): { reason: string; haltNow: boolean } | null {
+export function accountBlock(state: BotState, equity: number, drawdownEquity: number = equity): { reason: string; haltNow: boolean } | null {
   if (state.halted) return { reason: `halted: ${state.haltReason ?? "manual"}`, haltNow: false };
-  const peak = Math.max(state.peakEquity, equity);
-  if (peak > 0 && (peak - equity) / peak >= RISK.maxDrawdownPct) {
+  const peak = Math.max(state.peakEquity, drawdownEquity);
+  if (peak > 0 && (peak - drawdownEquity) / peak >= RISK.maxDrawdownPct) {
     return {
-      reason: `drawdown ${(((peak - equity) / peak) * 100).toFixed(1)}% from peak hit the ${RISK.maxDrawdownPct * 100}% kill switch`,
+      reason: `drawdown ${(((peak - drawdownEquity) / peak) * 100).toFixed(1)}% from peak hit the ${RISK.maxDrawdownPct * 100}% kill switch`,
       haltNow: true,
     };
   }

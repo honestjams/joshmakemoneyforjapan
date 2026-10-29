@@ -30,9 +30,9 @@ const closesBefore = (c: Candle[], n: number) => c.slice(-n - 1, -1).map((k) => 
  * above the prior N-candle closing high; exits on a close below the prior
  * M-candle closing low. Wins less than half the time but the winners run.
  */
-export function donchianBreakout(interval: string, entryN: number, exitN: number, stopAtr: number): Strategy {
+export function donchianBreakout(interval: string, entryN: number, exitN: number, stopAtr: number, name?: string): Strategy {
   return {
-    name: `donchian_${entryN}_${exitN}_${interval}`,
+    name: name ?? `donchian_${entryN}_${exitN}_${interval}`,
     interval,
     candleMs: intervalMs(interval),
     lookbackCandles: Math.max(entryN, exitN) + 30,

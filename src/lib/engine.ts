@@ -3,7 +3,7 @@ import { type Calibration, decide } from "./agents/decision";
 import { blendProbability, type DecisionModel } from "./agents/jev";
 import { researchView } from "./agents/research";
 import { accountBlock, assessEntry, stopFill } from "./agents/risk";
-import { STRATEGIES, type Strategy, strategyByName } from "./agents/strategies";
+import { STRATEGIES, type Strategy } from "./agents/strategies";
 import type { Broker } from "./exchange/broker";
 import { mergeCalibration, type Store, tradingDay } from "./store/store";
 import type { BotState, Candle, ExitReason, KnowledgeBrief, Position, ProductRules, Ticker } from "./types";
@@ -146,13 +146,16 @@ async function tick(deps: EngineDeps, now: number, products: readonly string[], 
     cash = await broker.availableCash();
     equity = cash + positions.reduce((s, p) => s + p.size * view.markPrice(p), 0);
   }
-  const block = accountBlock(state, equity);
+  // Kill-switch equity: at market prices, or with open positions capped at their cost (RISK.drawdownBasis).
+  const drawdownEquity =
+    RISK.drawdownBasis === "cost" ? cash + positions.reduce((s, p) => s + p.size * Math.min(view.markPrice(p), p.entryPrice), 0) : equity;
+  const block = accountBlock(state, equity, drawdownEquity);
   if (block?.haltNow) {
     state.halted = true;
     state.haltReason = block.reason;
     actions.push(`HALTED: ${block.reason}`);
   }
-  state.peakEquity = Math.max(state.peakEquity, equity);
+  state.peakEquity = Math.max(state.peakEquity, drawdownEquity);
 
   // 4. New entries: one position per market, strategies in priority order.
   if (block) {
@@ -278,7 +281,8 @@ async function considerEntry(a: {
 /** Exit management for one position. Returns a log line when the position closes. */
 async function manageExit(deps: EngineDeps, broker: Broker, state: BotState, view: MarketView, pos: Position, now: number): Promise<string | null> {
   const bid = view.tickers.get(pos.productId)!.bid;
-  const strategy = strategyByName(pos.strategy);
+  // Look up in the strategies this engine was given, not the global list, so backtests of variants exit correctly.
+  const strategy = (deps.strategies ?? STRATEGIES).find((s) => s.name === pos.strategy);
 
   let reason: ExitReason | null = null;
   let detail = "";

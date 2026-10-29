@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { tradingMode } from "@/lib/bot";
+import { RISK } from "@/config/settings";
 import { liquidateAll, runTick, type EngineDeps } from "@/lib/engine";
 import { HistoricalMarket } from "@/lib/backtest";
 import { PaperBroker, type Broker } from "@/lib/exchange/broker";
 import { MemoryStore, newState } from "@/lib/store/store";
 import type { Candle } from "@/lib/types";
+import { donchianBreakout } from "@/lib/agents/strategies";
 import { DAY, daily, fixedRules, goodCalibration } from "./helpers";
 
 const START = Date.UTC(2026, 0, 1);
@@ -57,6 +59,16 @@ describe("runTick (paper)", () => {
     expect(exit.actions[0]).toMatch(/^SELL .*signal_exit/);
     expect(store.trades).toHaveLength(1);
     expect(store.state!.paperCash).toBeCloseTo(500 + store.trades[0].pnl, 6);
+  });
+
+  it("exits positions using the strategies it was given, not only the built-in list", async () => {
+    const custom = donchianBreakout("1d", 55, 20, 3, "custom_variant");
+    const m = market([110, 115, 120], 0.05);
+    const { store, tick } = await setup(m, { strategies: [custom], baseCalibration: { custom_variant: goodCalibration.donchian_55_20_1d } });
+    await tick(90);
+    expect(store.positions[0]?.strategy).toBe("custom_variant");
+    await tick(91);
+    expect(store.positions).toHaveLength(1); // still held, not closed as "strategy retired"
   });
 
   it("takes the emergency stop when price crashes through it", async () => {
@@ -166,6 +178,35 @@ describe("safety controls", () => {
     expect(store.trades[0].exitReason).toBe("liquidated");
     expect(store.state!.halted).toBe(true);
     expect((await tick(91)).actions.some((a) => a.startsWith("BUY"))).toBe(false);
+  });
+
+  it("kill switch ignores a winner giving back unrealised profit, but not real losses", async () => {
+    // Bought at ~110, runs to 1000, then slides back to 200 (still above cost) without any 10% day.
+    const path = [110, 300, 600, 1000, 900, 800, 700, 600, 520, 450, 390, 340, 290, 250, 220, 200];
+    const last = 89 + path.length;
+    const runPath = async (basis: "mark" | "cost") => {
+      const saved = RISK.drawdownBasis;
+      RISK.drawdownBasis = basis;
+      try {
+        const { store, tick } = await setup(market(path, 0.02));
+        for (let d = 90; d <= last; d++) await tick(d);
+        return store;
+      } finally {
+        RISK.drawdownBasis = saved;
+      }
+    };
+    expect((await runPath("mark")).state!.halted).toBe(true); // the old rule halts on the give-back
+    const store = await runPath("cost");
+    expect(store.state!.halted).toBe(false);
+    expect(store.positions).toHaveLength(1);
+  });
+
+  it("kill switch still halts on real losses", async () => {
+    const { store, tick } = await setup(market([110], 0.05));
+    await tick(90);
+    store.state!.peakEquity = 1000; // equity at cost (~$500) is far below a $1000 peak
+    await tick(90);
+    expect(store.state!.halted).toBe(true);
   });
 
   it("skips a run while another holds the lock", async () => {

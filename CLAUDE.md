@@ -22,6 +22,10 @@ Multi-agent crypto trading bot for CoinJar Exchange. Next.js on Vercel, Supabase
 - The live CoinJar key must be trade-only: `checkCoinjarKey` rejects keys with withdrawal or transfer permission on every live run.
 - Never ask the user to paste API keys into chat. Keys go in Vercel env vars.
 
+## Research
+
+Record every study in `docs/research-log.md` (newest first): what was tested, on which data, unseen-period results, and the decision. Read it before starting new research so work isn't repeated. `npx tsx scripts/research/variants.ts` checks settings robustness on CoinJar and Binance data.
+
 ## Knowledge update procedure
 
 When the user asks for a "knowledge update" (or "update the bot's research"):
