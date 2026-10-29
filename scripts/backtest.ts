@@ -35,34 +35,36 @@ async function main() {
   const only = arg("only")?.split(",");
   const STRATEGIES = only ? ALL_STRATEGIES.filter((s) => only.includes(s.interval)) : ALL_STRATEGIES;
   if (arg("max-positions")) RISK.maxOpenPositions = Number(arg("max-positions"));
+  // --products BTCAUD,ETHAUD,... to test a different market list.
+  const PRODUCTS: readonly string[] = arg("products")?.split(",") ?? MARKETS.products;
   console.log(`Strategies: ${STRATEGIES.map((s) => s.name).join(", ")}; max open positions ${RISK.maxOpenPositions}`);
   const split = Date.parse(arg("split", "2023-01-01")!);
   const intervals = [...new Set(STRATEGIES.map((s) => s.interval))];
   const tickerInterval = intervals.includes("4h") ? "4h" : intervals[0];
 
   const series = new Map<string, Candle[]>();
-  for (const pid of MARKETS.products) {
+  for (const pid of PRODUCTS) {
     for (const interval of intervals) series.set(HistoricalMarket.key(pid, interval), await coinjarHistory(pid, interval, 2550));
   }
   const rules = await fetchProductRules();
   const now = Date.now();
 
   // 1. Calibration on data before the split only.
-  const studyBefore = STRATEGIES.flatMap((s) => MARKETS.products.flatMap((pid) => studyStrategy(s, pid, series.get(HistoricalMarket.key(pid, s.interval))!, -Infinity, split)));
+  const studyBefore = STRATEGIES.flatMap((s) => PRODUCTS.flatMap((pid) => studyStrategy(s, pid, series.get(HistoricalMarket.key(pid, s.interval))!, -Infinity, split)));
   const calibration = toCalibration(studyBefore.filter((t) => t.exitTime < split));
   console.log(`Calibration (trades closed before ${new Date(split).toISOString().slice(0, 10)}):`);
   printCalibration(calibration);
 
   // 2. Unseen period through the real engine.
   for (const cash of cashLevels) {
-    const sim = await simulate({ series, tickerInterval, rules, calibration, strategies: STRATEGIES, products: MARKETS.products, startCash: cash, fromMs: split, toMs: now });
+    const sim = await simulate({ series, tickerInterval, rules, calibration, strategies: STRATEGIES, products: PRODUCTS, startCash: cash, fromMs: split, toMs: now });
     report(`Unseen period ${new Date(split).toISOString().slice(0, 10)} -> today, $${cash} paper account`, sim);
   }
 
   // 3. Full history (2020 ->), calibrated on everything: how did 5-month windows go?
-  const fullCal = toCalibration(STRATEGIES.flatMap((s) => MARKETS.products.flatMap((pid) => studyStrategy(s, pid, series.get(HistoricalMarket.key(pid, s.interval))!))));
+  const fullCal = toCalibration(STRATEGIES.flatMap((s) => PRODUCTS.flatMap((pid) => studyStrategy(s, pid, series.get(HistoricalMarket.key(pid, s.interval))!))));
   const fullStart = Date.parse("2020-03-01");
-  const full = await simulate({ series, tickerInterval, rules, calibration: fullCal, strategies: STRATEGIES, products: MARKETS.products, startCash: 500, fromMs: fullStart, toMs: now });
+  const full = await simulate({ series, tickerInterval, rules, calibration: fullCal, strategies: STRATEGIES, products: PRODUCTS, startCash: 500, fromMs: fullStart, toMs: now });
   report("Full history 2020-03 -> today, $500 (rules are textbook; calibration in-sample)", full);
   rollingWindows(full, 152);
 
@@ -72,7 +74,7 @@ async function main() {
       JSON.stringify(
         {
           generatedAt: new Date(now).toISOString(),
-          source: `studyStrategy over CoinJar history since ${new Date(series.get(HistoricalMarket.key("BTCAUD", "1d"))![0].time).toISOString().slice(0, 10)} (${MARKETS.products.join(", ")}), net of 0.1% fees, 0.1% half-spread and 0.5% stop slippage`,
+          source: `studyStrategy over CoinJar history since ${new Date(series.get(HistoricalMarket.key("BTCAUD", "1d"))![0].time).toISOString().slice(0, 10)} (${PRODUCTS.join(", ")}), net of 0.1% fees, 0.1% half-spread and 0.5% stop slippage`,
           strategies: fullCal,
         },
         null,

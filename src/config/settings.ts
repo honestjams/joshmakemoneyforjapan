@@ -15,15 +15,19 @@ export const RISK = {
   maxDailyLossPct: 0.1,
   /** Kill switch: halt all trading if equity falls this far below its peak. Needs a manual reset. */
   maxDrawdownPct: 0.2,
-  /** One per market. With 10% each, at most 40% of equity is ever in the market. */
+  /** With 10% each, at most 40% of equity is ever in the market. (5 made more in backtests but drew down 18%, too close to the kill switch.) */
   maxOpenPositions: 4,
-  /** Skip markets whose bid/ask spread is wider than this (thin liquidity = hidden cost). */
-  maxSpreadPct: 0.004,
+  /** Skip a trade when the bid/ask spread is wider than this. DOGEAUD usually sits around 0.45%. */
+  maxSpreadPct: 0.006,
 };
 
 export const MARKETS = {
-  /** CoinJar's most active AUD markets. */
-  products: ["BTCAUD", "ETHAUD", "SOLAUD", "XRPAUD"],
+  /**
+   * Every CoinJar AUD market that passed fixed rules on 29 Oct 2026 (chosen
+   * before backtesting): spread <= 0.5%, minimum order <= $35, 3+ years of
+   * history, trades every day. Order = priority when slots are scarce.
+   */
+  products: ["BTCAUD", "ETHAUD", "SOLAUD", "XRPAUD", "DOGE-AUD"],
   /** Wait this long after closing a market before trading it again. */
   reentryCooldownMs: 4 * 60 * 60 * 1000,
 };

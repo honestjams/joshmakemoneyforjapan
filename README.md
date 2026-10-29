@@ -21,7 +21,7 @@ It trades rarely (about once a month per market) and **wins only 40–50% of tra
 Every 5 minutes, Supabase pg_cron calls `POST /api/tick`, which runs one cycle (`src/lib/engine.ts`):
 
 ```
- market data agent ── CoinJar daily candles + live bid/ask (BTC, ETH, SOL, XRP / AUD)
+ market data agent ── CoinJar daily candles + live bid/ask (BTC, ETH, SOL, XRP, DOGE / AUD)
         │
         ├─► exits ── strategy exit signal (20-day low) · emergency stop (on the exchange in live mode)
         │
@@ -48,21 +48,24 @@ The dashboard (`/`, password-protected) shows equity, win rate, positions, trade
 
 | Period | Start | End | Return | Worst drawdown | Trades | Win rate |
 |---|---|---|---|---|---|---|
-| Unseen: 2023-01 → 2026-10 (calibrated on 2019–2022 only) | $500 | $722 | **+44%** | −12% | 53 | 40% |
-| Unseen, $150 account (ETH too expensive to trade) | $150 | $171 | +14% | −7% | 17 | 41% |
-| Full history: 2020-03 → 2026-10 | $500 | $1,218 | +143% | −14% | 80 | 45% |
+| Unseen: 2023-01 → 2026-10 (calibrated on 2019–2022 only) | **$350** | **$481** | **+37%** | −14% | 51 | 41% |
+| Unseen, $500 account | $500 | $762 | +53% | −14% | 59 | 39% |
+| Unseen, $150 account (ETH too expensive to trade) | $150 | $178 | +19% | −8% | 26 | 39% |
+| Full history: 2020-03 → 2026-10 | $500 | $1,219 | +144% | −16% | 85 | 45% |
 | $50 account | $50 | $50 | 0% | – | 0 | – (every trade is below CoinJar's minimum order size) |
 
-By year (full history): 2020 +21%, 2021 +38%, 2022 −2%, 2023 +12%, 2024 +39%, 2025 −3%, 2026 −1%. Gains come from bull runs. In bear markets it mostly sits in cash and loses a little.
+By year (full history): 2020 +21%, 2021 +38%, 2022 −2%, 2023 +14%, 2024 +41%, 2025 −5%, 2026 −1%. Gains come from bull runs. In bear markets it mostly sits in cash and loses a little.
 
 **Over a 5-month window** (e.g. now → April), across 326 historical windows:
 
-| | Return | On $500 | On $1,000 |
-|---|---|---|---|
-| Chance of profit | 54% | | |
-| Bad case (10th percentile) | −3.6% | −$18 | −$37 |
-| Typical (median) | +1.4% | +$7 | +$14 |
-| Good case (90th percentile) | +31% | +$154 | +$309 |
+| | Return | On $350 |
+|---|---|---|
+| Chance of profit | 52% | |
+| Bad case (10th percentile) | −4.3% | −$15 |
+| Typical (median) | +0.3% | +$1 |
+| Good case (90th percentile) | +29% | +$100 |
+
+**Markets** were chosen by fixed rules before backtesting: spread ≤ 0.5%, minimum order ≤ $35, 3+ years of history, trades every day. Of CoinJar's ~75 AUD markets only BTC, ETH, SOL, XRP and DOGE pass; most others have 2–15% spreads. Adding DOGE raised the unseen-period result on $350 from +23% to +37%.
 
 `scripts/research/trend.ts` has the 7-rule comparison these choices came from: all 7 trend rules were profitable over 2019–2026, and Donchian 55/20 had the smallest drawdown.
 
@@ -76,6 +79,7 @@ Because of CoinJar's minimum order sizes and the 10% rule, the account must hold
 | SOLAUD | 0.1 SOL ≈ $14.50 | ≈ $145 |
 | XRPAUD | 10 XRP ≈ $19 | ≈ $190 |
 | ETHAUD | 0.01 ETH ≈ $33 | ≈ $335 |
+| DOGE-AUD | ≈ $11 | ≈ $115 |
 
 ## Setup
 
@@ -117,6 +121,10 @@ To switch over:
 3. Deposit at least the balance needed for the markets you want (table above).
 
 The live order path follows CoinJar's documented API but hasn't yet been run against a real account. Watch the first trades closely.
+
+## Research data
+
+Every run also saves CoinJar's bid/ask next to Binance's price converted to AUD (`quotes` table, kept 90 days). This is for testing later whether CoinJar's prices lag global ones, the one idea that could support more frequent trading. It never affects trades.
 
 ## JEV
 

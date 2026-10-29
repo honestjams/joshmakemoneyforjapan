@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { liveGate, productionDeps, tradingMode } from "@/lib/bot";
 import { runTick } from "@/lib/engine";
+import { recordQuotes } from "@/lib/research/quotes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,8 @@ export async function POST(req: Request) {
       if (!gate.ok) return Response.json({ error: `live trading blocked: ${gate.reason}` }, { status: 409 });
     }
     const result = await runTick(productionDeps());
+    // Research data only: a failure here must never count against a trading run.
+    await recordQuotes().catch((err) => console.warn("[tick] quote recording failed", err));
     return Response.json(result, { status: result.errors.length ? 207 : 200 });
   } catch (err) {
     console.error("[tick] failed", err);
