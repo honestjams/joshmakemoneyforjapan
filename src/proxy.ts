@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 /**
  * Password-protects the dashboard (it shows balances and has a halt button).
  * Browser prompts for a username (anything) and DASHBOARD_PASSWORD.
- * /api/tick is excluded: it checks its own CRON_SECRET.
+ * /api/tick and /api/readiness are excluded: they check CRON_SECRET instead.
  */
 export function proxy(req: NextRequest) {
   const password = process.env.DASHBOARD_PASSWORD;
@@ -29,5 +29,5 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export const config = {
-  matcher: ["/((?!api/tick|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api/tick|api/readiness|_next/static|_next/image|favicon.ico).*)"],
 };

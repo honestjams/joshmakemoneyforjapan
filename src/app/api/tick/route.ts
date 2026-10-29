@@ -1,23 +1,15 @@
-import { timingSafeEqual } from "node:crypto";
 import { liveGate, productionDeps, tradingMode } from "@/lib/bot";
 import { runTick } from "@/lib/engine";
 import { recordQuotes } from "@/lib/research/quotes";
+import { authorizedCron } from "./auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-function authorized(req: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  const given = Buffer.from(req.headers.get("authorization") ?? "");
-  const expected = Buffer.from(`Bearer ${secret}`);
-  return given.length === expected.length && timingSafeEqual(given, expected);
-}
-
 /** Called every 5 minutes by Supabase pg_cron (see supabase/scheduler.sql). */
 export async function POST(req: Request) {
-  if (!authorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!authorizedCron(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
   try {
     if (tradingMode() === "live") {
       const gate = await liveGate();
